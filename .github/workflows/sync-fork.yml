@@ -1,0 +1,58 @@
+name: Sync fork
+
+# Keeps this fork's `main` current with upstream by merging, not fast-forwarding:
+# `main` carries the fork's own feature merges, so GitHub's "Sync fork" button
+# and `gh repo sync` both refuse it. Feature branches are left alone - rebasing
+# them would rewrite pushed history.
+#
+# GITHUB_TOKEN may not push a diff that touches `.github/workflows`, and
+# upstream edits its own workflows. Such a sync stops here with an explanatory
+# failure unless the repository has a SYNC_FORK_TOKEN secret: a fine-grained
+# PAT for this repository with Contents read/write and Workflows read/write.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-fork
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_FORK_TOKEN || github.token }}
+
+      - name: Merge upstream/main into main
+        env:
+          UPSTREAM: https://github.com/hardbeat920/monocode.git
+          MAY_PUSH_WORKFLOWS: ${{ secrets.SYNC_FORK_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM"
+          # Upstream tags stay out: a fetched v* tag would fire the release build.
+          git fetch --no-tags upstream main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already contains upstream/main ($(git rev-parse --short upstream/main))."
+            exit 0
+          fi
+          if [ "$MAY_PUSH_WORKFLOWS" != "true" ] &&
+             ! git diff --quiet HEAD...upstream/main -- .github/workflows; then
+            echo "::error::Upstream changed .github/workflows, which GITHUB_TOKEN may not push. Add a SYNC_FORK_TOKEN secret (fine-grained PAT, this repo, Contents + Workflows read/write) and re-run, or merge upstream/main by hand."
+            git diff --stat HEAD...upstream/main -- .github/workflows
+            exit 1
+          fi
+          git merge --no-edit -m "Merge upstream/main" upstream/main
+          git push origin HEAD:main
+          echo "Merged upstream/main ($(git rev-parse --short upstream/main))."
