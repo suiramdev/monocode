@@ -78,8 +78,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -qam "Release $VERSION"
+          # The bump lands on the tag only. Keeping it off `main` leaves the
+          # version fields exactly as upstream wrote them, so the next upstream
+          # release merges without a conflict in four files.
           git tag "v$VERSION"
-          git push origin HEAD:main "refs/tags/v$VERSION"
+          git push origin "refs/tags/v$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
