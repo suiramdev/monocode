@@ -11,7 +11,9 @@ import {
   githubReviewStateLabel,
   groupProjectsByRepo,
   inboxComposerCard,
+  inboxIdentityKey,
   inboxItemKey,
+  inboxItemRef,
   inboxListCacheKey,
   inboxPersonAvatarUrl,
   inboxProjectsForRail,
@@ -219,11 +221,63 @@ describe("groupProjectsByRepo", () => {
   it("fetches each GitHub remote once", () => {
     expect(
       groupProjectsByRepo([
-        { path: "/tmp/monocode", repo: "hardbeat920/monocode" },
-        { path: "/tmp/agent-terminal", repo: "HardBeat920/monocode" },
-        { path: "/tmp/docs", repo: "acme/docs" },
+        { path: "/tmp/monocode", repo: "hardbeat920/monocode", forge: "github" },
+        {
+          path: "/tmp/agent-terminal",
+          repo: "HardBeat920/monocode",
+          forge: "github",
+        },
+        { path: "/tmp/docs", repo: "acme/docs", forge: "github" },
       ]).map((project) => project.path),
     ).toEqual(["/tmp/monocode", "/tmp/docs"]);
+  });
+
+  it("fetches the same slug on both forges", () => {
+    expect(
+      groupProjectsByRepo([
+        { path: "/tmp/web", repo: "acme/web", forge: "github" },
+        { path: "/tmp/web-gitlab", repo: "acme/web", forge: "gitlab" },
+      ]).map((project) => project.path),
+    ).toEqual(["/tmp/web", "/tmp/web-gitlab"]);
+  });
+});
+
+describe("inboxIdentityKey", () => {
+  it("never merges a GitHub and a GitLab item with the same slug", () => {
+    const github = item({
+      number: 7,
+      kind: "pr",
+      updatedAt: "2026-08-27T10:00:00Z",
+    });
+    expect(inboxIdentityKey(github)).toBe("acme/web:pr:7");
+    expect(
+      inboxIdentityKey({ ...github, provider: "gitlab" }),
+    ).toBe("gitlab:acme/web:pr:7");
+  });
+});
+
+describe("inboxItemRef", () => {
+  it("uses GitLab's bang for merge requests and a hash for issues", () => {
+    expect(
+      inboxItemRef(
+        item({
+          number: 7,
+          kind: "pr",
+          provider: "gitlab",
+          updatedAt: "2026-08-27T10:00:00Z",
+        }),
+      ),
+    ).toBe("!7");
+    expect(
+      inboxItemRef(
+        item({
+          number: 7,
+          kind: "issue",
+          provider: "gitlab",
+          updatedAt: "2026-08-27T10:00:00Z",
+        }),
+      ),
+    ).toBe("#7");
   });
 });
 
@@ -323,6 +377,23 @@ describe("inboxStartDraft", () => {
         }),
       ),
     ).toContain("Work on this GitHub pull request:");
+  });
+
+  it("labels GitLab merge requests and refers to them with a bang", () => {
+    expect(
+      inboxStartDraft(
+        item({
+          number: 7,
+          kind: "pr",
+          provider: "gitlab",
+          title: "Fix checkout",
+          url: "https://gitlab.com/acme/web/-/merge_requests/7",
+          updatedAt: "2026-08-27T10:00:00Z",
+        }),
+      ),
+    ).toBe(
+      "Work on this GitLab merge request:\n\n!7 Fix checkout\nhttps://gitlab.com/acme/web/-/merge_requests/7\n",
+    );
   });
 
   it("seeds Linear issues with the identifier", () => {

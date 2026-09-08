@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { LoaderCircle, X } from "../chrome/icons";
+import { INBOX_PROVIDER_LABEL } from "../chrome/InboxProviderMark";
 import {
   formatRelativeTime,
   githubReviewStateLabel,
@@ -79,7 +80,7 @@ export function InboxComments({
     0,
   );
   const label = count === 1 ? "1 comment" : `${count} comments`;
-  const moreOn = provider === "linear" ? "Linear" : "GitHub";
+  const moreOn = INBOX_PROVIDER_LABEL[provider];
 
   return (
     <section className="flex flex-col gap-3 border-t border-content/10 pt-5">
@@ -280,7 +281,9 @@ function InboxComment({
               <button
                 type="button"
                 title={
-                  provider === "linear" ? "Open in Linear" : "Open on GitHub"
+                  provider === "linear"
+                    ? "Open in Linear"
+                    : `Open on ${INBOX_PROVIDER_LABEL[provider]}`
                 }
                 onClick={() => void openUrl(comment.url)}
                 className="hover:text-content"

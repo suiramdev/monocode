@@ -182,6 +182,111 @@ fn git_info_uncached(root: &Path) -> GitInfo {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GitForge {
+    Github,
+    Gitlab,
+}
+
+impl GitForge {
+    fn as_str(self) -> &'static str {
+        match self {
+            GitForge::Github => "github",
+            GitForge::Gitlab => "gitlab",
+        }
+    }
+}
+
+/// Which forge CLI serves this working copy: `gh` or `glab`.
+#[tauri::command]
+pub async fn git_forge(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_forge_for(&expand_home(&cwd)).as_str().to_string()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Detecting the forge can cost a `git` and a `glab` subprocess, and the
+/// inbox asks for every project on every refresh. A remote does not move
+/// mid-session, so a minute of staleness is free.
+const GIT_FORGE_TTL: Duration = Duration::from_secs(60);
+
+static GIT_FORGE_CACHE: Mutex<Option<HashMap<PathBuf, (Instant, GitForge)>>> = Mutex::new(None);
+
+pub(crate) fn git_forge_for(root: &Path) -> GitForge {
+    if let Ok(mut guard) = GIT_FORGE_CACHE.lock() {
+        let cache = guard.get_or_insert_with(HashMap::new);
+        cache.retain(|_, (at, _)| at.elapsed() < GIT_FORGE_TTL);
+        if let Some((_, forge)) = cache.get(root) {
+            return *forge;
+        }
+    }
+    let forge = git_forge_uncached(root);
+    if let Ok(mut guard) = GIT_FORGE_CACHE.lock() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(root.to_path_buf(), (Instant::now(), forge));
+    }
+    forge
+}
+
+fn git_forge_uncached(root: &Path) -> GitForge {
+    let Some(host) = git_stdout(root, &["remote", "get-url", "origin"])
+        .as_deref()
+        .and_then(git_url_host)
+    else {
+        return GitForge::Github;
+    };
+    if host == "github.com" || host.ends_with(".github.com") {
+        return GitForge::Github;
+    }
+    if host.contains("gitlab") {
+        return GitForge::Gitlab;
+    }
+    // A self-hosted host tells us nothing by name, but glab only holds a
+    // token for hosts the user actually authenticated against.
+    let authenticated =
+        crate::gitlab::glab_stdout(root, &["config", "get", "token", "--host", &host])
+            .map(|token| !token.trim().is_empty())
+            .unwrap_or(false);
+    if authenticated {
+        GitForge::Gitlab
+    } else {
+        GitForge::Github
+    }
+}
+
+/// Host of a git remote URL, in any of the shapes git accepts.
+pub(crate) fn git_url_host(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let rest = match url.split_once("://") {
+        Some((_, rest)) => rest,
+        None => url,
+    };
+    let authority = rest
+        .split(['/', ':'])
+        .next()
+        .filter(|part| !part.is_empty())?;
+    let authority = match rest.split_once('@') {
+        // `user@` only precedes the host when it comes before any separator.
+        Some((user, after)) if !user.contains('/') && !user.contains(':') => after
+            .split(['/', ':'])
+            .next()
+            .filter(|part| !part.is_empty())?,
+        _ => authority,
+    };
+    let host = authority.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
 #[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitDiffStats {
@@ -224,6 +329,7 @@ pub struct GitDiffIndex {
     pub ahead: i64,
     pub behind: i64,
     pub ahead_of_default: i64,
+    pub forge: Option<String>,
 }
 
 /// Changed files in the opened folder, with per-file line counts and status.
@@ -479,11 +585,11 @@ pub async fn git_pr_status(cwd: String) -> Result<Option<GitPr>, String> {
 }
 
 #[derive(Deserialize)]
-struct GitPrCreateInput {
-    title: String,
-    body: String,
-    base: String,
-    head: String,
+pub(crate) struct GitPrCreateInput {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) base: String,
+    pub(crate) head: String,
 }
 
 /// Create a GitHub pull request with `gh` and return its URL.
@@ -672,7 +778,7 @@ pub struct GitHubPrDiff {
     pub truncated: bool,
 }
 
-const MAX_PR_DIFF_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_PR_DIFF_BYTES: usize = 2 * 1024 * 1024;
 
 /// Unified diff and file stats for a pull request, via `gh`.
 #[tauri::command]
@@ -887,6 +993,9 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
     } else {
         GitSync::default()
     };
+    // Only Git chrome needs the forge, and only a remote can have one.
+    let forge =
+        (include_sync && sync.remote.is_some()).then(|| git_forge_for(root).as_str().to_string());
     GitDiffIndex {
         branch: git_branch(root),
         files: out,
@@ -898,6 +1007,7 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
         ahead: sync.ahead,
         behind: sync.behind,
         ahead_of_default: sync.ahead_of_default,
+        forge,
     }
 }
 
@@ -1554,6 +1664,9 @@ fn git_range_context_for(root: &Path) -> Result<GitRangeContext, String> {
 
 fn git_pr_status_for(root: &Path) -> Option<GitPr> {
     let branch = git_branch(root)?;
+    if git_forge_for(root) == GitForge::Gitlab {
+        return crate::gitlab::mr_status_for(root, &branch);
+    }
     let repo = git_github_repo_for(root).ok()?;
     let head = github_pr_head_filter(&repo, &branch)?;
     let json = gh_stdout(
@@ -1883,7 +1996,7 @@ fn git_github_review_reply_for(root: &Path, thread_id: &str, body: &str) -> Resu
     })
 }
 
-fn with_temp_markdown(
+pub(crate) fn with_temp_markdown(
     body: &str,
     run: impl FnOnce(&str) -> Result<String, String>,
 ) -> Result<String, String> {
@@ -2441,6 +2554,9 @@ fn parse_gh_pr_list(json: &str) -> Option<GitPr> {
 }
 
 fn git_pr_create_for(root: &Path, input: &GitPrCreateInput) -> Result<String, String> {
+    if git_forge_for(root) == GitForge::Gitlab {
+        return crate::gitlab::mr_create_for(root, input);
+    }
     let title = input.title.trim();
     if title.is_empty() {
         return Err("Pull request title cannot be empty".into());
@@ -3881,6 +3997,32 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn git_url_host_reads_every_remote_shape() {
+        assert_eq!(
+            git_url_host("git@github.com:acme/web.git").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            git_url_host("ssh://git@gitlab.example.com:2222/acme/web.git").as_deref(),
+            Some("gitlab.example.com")
+        );
+        assert_eq!(
+            git_url_host("https://github.com/acme/web.git").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            git_url_host("Example.COM:acme/web.git").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            git_url_host("https://gitlab.dotblocks.fr/a/b.git").as_deref(),
+            Some("gitlab.dotblocks.fr")
+        );
+        assert_eq!(git_url_host("  "), None);
+        assert_eq!(git_url_host("/srv/repos/web.git"), None);
+    }
 
     #[test]
     fn stat_files_returns_mtime_for_existing_files_only() {

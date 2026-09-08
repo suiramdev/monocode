@@ -29,7 +29,10 @@ import {
   InboxFiltersMenu,
   INBOX_FILTER_MENU_WIDTH,
 } from "../chrome/InboxFiltersMenu";
-import { InboxProviderMark } from "../chrome/InboxProviderMark";
+import {
+  INBOX_PROVIDER_LABEL,
+  InboxProviderMark,
+} from "../chrome/InboxProviderMark";
 import { ProjectLogoIcon } from "../chrome/ProjectLogoIcon";
 import { ProjectMascot } from "../chrome/ProjectMascot";
 import { OverlayNav } from "../chrome/TitleBar";
@@ -38,23 +41,24 @@ import { useDragResize } from "../hooks/useDragResize";
 import { useLockOverscroll } from "../hooks/useLockOverscroll";
 import { useTabGroupLogos } from "../hooks/useTabGroupLogos";
 import {
-  githubPrDiff,
+  forgePrDiff,
+  forgeWorkItemComment,
+  forgeWorkItemDetails,
+  forgeWorkItemThread,
   githubReviewDecisionLabel,
-  githubWorkItemComment,
-  githubWorkItemDetails,
-  githubWorkItemThread,
   inboxItemKey,
   inboxItemRef,
   inboxItemStatus,
   inboxListIsFresh,
   inboxProjectsForRail,
   listInboxItems,
-  peekGithubPrDiff,
-  peekGithubWorkItemDetails,
-  peekGithubWorkItemThread,
+  peekForgePrDiff,
+  peekForgeWorkItemDetails,
+  peekForgeWorkItemThread,
   peekInboxList,
   formatRelativeTime,
   inboxPersonAvatarUrl,
+  type ForgeProvider,
   type GithubLabel,
   type GithubPrDiff,
   type GithubWorkItemDetails,
@@ -212,7 +216,7 @@ function InboxSourceTab({
   selected: boolean;
   onSelect: (source: InboxSource) => void;
 }) {
-  const label = source === "linear" ? "Linear" : "GitHub";
+  const label = INBOX_PROVIDER_LABEL[source];
   return (
     <button
       type="button"
@@ -434,7 +438,11 @@ export function InboxView({
         if (cached) return;
         setItems([]);
         const message = err instanceof Error ? err.message : String(err);
-        setProviderErrors({ github: message, linear: message });
+        setProviderErrors({
+          github: message,
+          gitlab: message,
+          linear: message,
+        });
       })
       .finally(() => {
         if (cancelled) return;
@@ -471,6 +479,10 @@ export function InboxView({
   const searchNarrowed = searchInput.trim().length > 0;
   const narrowedByUser = searchNarrowed || filtersActive;
   const sourceError = providerErrors[source] ?? null;
+  const forgeItems =
+    source === "gitlab"
+      ? "issues or merge requests"
+      : "issues or pull requests";
 
   const selected =
     visibleItems.find((item) => inboxItemKey(item) === selectedKey) ??
@@ -525,6 +537,11 @@ export function InboxView({
         <InboxSourceTab
           source="github"
           selected={source === "github"}
+          onSelect={onSourceChange}
+        />
+        <InboxSourceTab
+          source="gitlab"
+          selected={source === "gitlab"}
           onSelect={onSourceChange}
         />
         <InboxSourceTab
@@ -601,15 +618,15 @@ export function InboxView({
               ? searchNarrowed
                 ? source === "linear"
                   ? "No matching Linear issues"
-                  : "No matching issues or pull requests"
+                  : `No matching ${forgeItems}`
                 : source === "linear"
                   ? "No Linear issues match these filters"
-                  : "No issues or pull requests match these filters"
+                  : `No ${forgeItems} match these filters`
               : source === "linear"
                 ? "No Linear issues"
                 : projects.length === 0
                   ? "Open a project to fill the inbox"
-                  : "No matching issues or pull requests"}
+                  : `No matching ${forgeItems}`}
           </p>
         ) : (
           <ul className="flex flex-col gap-0.5 p-1.5">
@@ -802,6 +819,12 @@ function inboxStatusMark(item: InboxItem): InboxStatusMark {
   };
 }
 
+/** GitLab calls a pull request a merge request, so the noun follows the provider. */
+function inboxKindLabel(item: InboxItem): string {
+  if (item.kind !== "pr") return "Issue";
+  return item.provider === "gitlab" ? "Merge request" : "Pull request";
+}
+
 function InboxCard({
   item,
   active,
@@ -819,7 +842,7 @@ function InboxCard({
 }) {
   useInboxSeenTick();
   const status = inboxStatusMark(item);
-  const kindLabel = item.kind === "pr" ? "Pull request" : "Issue";
+  const kindLabel = inboxKindLabel(item);
   const time = formatRelativeTime(item.updatedAt);
   const name = projectName(item.projectPath);
   const linear = item.provider === "linear";
@@ -920,21 +943,22 @@ function InboxDetail({
   onStart?: (item: InboxItem, body?: string) => void | Promise<void>;
 }) {
   const linear = item.provider === "linear";
+  const forge = item.provider as ForgeProvider;
   const isPr = !linear && item.kind === "pr";
-  const githubKind =
+  const forgeKind =
     item.kind === "issue" || item.kind === "pr" ? item.kind : null;
   const cached = linear
     ? peekLinearIssueDetails(item.id ?? "")
-    : githubKind
-      ? peekGithubWorkItemDetails(item.projectPath, githubKind, item.number)
+    : forgeKind
+      ? peekForgeWorkItemDetails(item.projectPath, forgeKind, item.number)
       : null;
   const cachedDiff = isPr
-    ? peekGithubPrDiff(item.projectPath, item.number)
+    ? peekForgePrDiff(item.projectPath, item.number)
     : null;
   const cachedThread = linear
     ? peekLinearIssueThread(item.id ?? "")
-    : githubKind
-      ? peekGithubWorkItemThread(item.projectPath, githubKind, item.number)
+    : forgeKind
+      ? peekForgeWorkItemThread(item.projectPath, forgeKind, item.number)
       : null;
   const [details, setDetails] = useState<GithubWorkItemDetails | null>(cached);
   const [loading, setLoading] = useState(cached == null);
@@ -993,8 +1017,8 @@ function InboxDetail({
     let cancelled = false;
     const cachedDetails = linear
       ? peekLinearIssueDetails(item.id ?? "")
-      : githubKind
-        ? peekGithubWorkItemDetails(item.projectPath, githubKind, item.number)
+      : forgeKind
+        ? peekForgeWorkItemDetails(item.projectPath, forgeKind, item.number)
         : null;
     if (cachedDetails) {
       setDetails(cachedDetails);
@@ -1009,8 +1033,8 @@ function InboxDetail({
       ? item.id
         ? linearIssueDetails(item.id)
         : Promise.reject(new Error("Missing Linear issue"))
-      : githubKind
-        ? githubWorkItemDetails(item.projectPath, githubKind, item.number)
+      : forgeKind
+        ? forgeWorkItemDetails(forge, item.projectPath, forgeKind, item.number)
         : Promise.reject(new Error("Unknown inbox item"));
     void pending
       .then((next) => {
@@ -1029,7 +1053,15 @@ function InboxDetail({
     return () => {
       cancelled = true;
     };
-  }, [githubKind, item.id, item.number, item.projectPath, linear, revision]);
+  }, [
+    forge,
+    forgeKind,
+    item.id,
+    item.number,
+    item.projectPath,
+    linear,
+    revision,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1063,10 +1095,10 @@ function InboxDetail({
         cancelled = true;
       };
     }
-    if (!githubKind) return;
-    const cachedThread = peekGithubWorkItemThread(
+    if (!forgeKind) return;
+    const cachedThread = peekForgeWorkItemThread(
       item.projectPath,
-      githubKind,
+      forgeKind,
       item.number,
     );
     if (cachedThread) {
@@ -1078,7 +1110,7 @@ function InboxDetail({
       setThreadError(null);
       setThread(null);
     }
-    void githubWorkItemThread(item.projectPath, githubKind, item.number)
+    void forgeWorkItemThread(forge, item.projectPath, forgeKind, item.number)
       .then((next) => {
         if (cancelled) return;
         setThread(next);
@@ -1095,12 +1127,20 @@ function InboxDetail({
     return () => {
       cancelled = true;
     };
-  }, [githubKind, item.id, item.number, item.projectPath, linear, revision]);
+  }, [
+    forge,
+    forgeKind,
+    item.id,
+    item.number,
+    item.projectPath,
+    linear,
+    revision,
+  ]);
 
   useEffect(() => {
     if (!isPr || tab !== "code") return;
     let cancelled = false;
-    const cachedDiff = peekGithubPrDiff(item.projectPath, item.number);
+    const cachedDiff = peekForgePrDiff(item.projectPath, item.number);
     if (cachedDiff) {
       setPrDiff(cachedDiff);
       setDiffLoading(false);
@@ -1110,7 +1150,7 @@ function InboxDetail({
       setDiffError(null);
       setPrDiff(null);
     }
-    void githubPrDiff(item.projectPath, item.number)
+    void forgePrDiff(forge, item.projectPath, item.number)
       .then((next) => {
         if (cancelled) return;
         setPrDiff(next);
@@ -1127,7 +1167,7 @@ function InboxDetail({
     return () => {
       cancelled = true;
     };
-  }, [isPr, item.number, item.projectPath, revision, tab]);
+  }, [forge, isPr, item.number, item.projectPath, revision, tab]);
 
   const postComment = async (body: string) => {
     setPosting(true);
@@ -1144,10 +1184,11 @@ function InboxDetail({
         }
         return;
       }
-      if (!githubKind) throw new Error("Unknown inbox item");
-      await githubWorkItemComment(
+      if (!forgeKind) throw new Error("Unknown inbox item");
+      await forgeWorkItemComment(
+        forge,
         item.projectPath,
-        githubKind,
+        forgeKind,
         item.number,
         body,
         { inReplyTo: replyTo?.threadId },
@@ -1155,9 +1196,10 @@ function InboxDetail({
       setReplyTo(null);
       try {
         setThread(
-          await githubWorkItemThread(
+          await forgeWorkItemThread(
+            forge,
             item.projectPath,
-            githubKind,
+            forgeKind,
             item.number,
             {
               force: true,
@@ -1180,7 +1222,7 @@ function InboxDetail({
       <header className="flex flex-col gap-3">
         <div className="flex items-center gap-2 text-[12px] text-content/50">
           <InboxProviderMark provider={item.provider} className="size-3.5" />
-          <span>{item.kind === "pr" ? "Pull request" : "Issue"}</span>
+          <span>{inboxKindLabel(item)}</span>
           <span className="tabular-nums">{inboxItemRef(item)}</span>
           <span className={`flex items-center gap-1 ${statusMark.className}`}>
             <statusMark.Icon className="size-3.5" strokeWidth={1.75} />
@@ -1315,10 +1357,10 @@ function InboxDetail({
           >
             <ExternalLink className="size-3.5" strokeWidth={1.75} />
             {item.kind === "pr"
-              ? "Review on GitHub"
+              ? `Review on ${INBOX_PROVIDER_LABEL[item.provider]}`
               : linear
                 ? "Open in Linear"
-                : "Open on GitHub"}
+                : `Open on ${INBOX_PROVIDER_LABEL[item.provider]}`}
           </button>
         </div>
         {startError ? (
@@ -1328,7 +1370,7 @@ function InboxDetail({
       {isPr ? (
         <div
           role="tablist"
-          aria-label="Pull request sections"
+          aria-label={`${inboxKindLabel(item)} sections`}
           className="flex h-9 gap-4 items-stretch border-b border-content/10"
         >
           <InboxDetailTab

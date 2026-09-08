@@ -239,6 +239,7 @@ function ChangedFiles({
   const staged = files.filter((file) => file.staged);
   const unstaged = files.filter((file) => file.unstaged);
   const hasRemote = Boolean(index?.remote);
+  const mr = index?.forge === "gitlab";
   const hasOpenPr = pr?.state === "open";
   const diverged = (index?.ahead ?? 0) > 0 && (index?.behind ?? 0) > 0;
   const onDefault =
@@ -291,7 +292,7 @@ function ChangedFiles({
     const branch = index.branch;
     return confirmNative(
       kind === "pr"
-        ? `Create a pull request from default branch "${branch}"?`
+        ? `Create a ${mr ? "merge request" : "pull request"} from default branch "${branch}"?`
         : `Push to default branch "${branch}"?`,
     );
   };
@@ -413,7 +414,10 @@ function ChangedFiles({
 
   const openCreatedPr = async () => {
     const content = await generatePrContent(cwd, textHarness);
-    if (!content) throw new Error("Could not prepare pull request content");
+    if (!content)
+      throw new Error(
+        `Could not prepare ${mr ? "merge request" : "pull request"} content`,
+      );
     const url = await gitPrCreate(
       cwd,
       content.title,
@@ -518,7 +522,7 @@ function ChangedFiles({
                 onClick={() => void commit(true, true)}
                 className="flex h-7 w-full items-center px-3 text-left text-[12px] text-content hover:bg-content/10 disabled:opacity-40"
               >
-                Commit, Push & Create PR
+                Commit, Push & Create {mr ? "MR" : "PR"}
               </button>
             </div>
           ) : null}
@@ -737,12 +741,14 @@ function GitSyncActions({
         : behind > 0
           ? `Pull ${behind} commit${behind === 1 ? "" : "s"} from ${dest}`
           : `Push ${ahead} commit${ahead === 1 ? "" : "s"} to ${dest}`;
+  const mr = index.forge === "gitlab";
+  const noun = mr ? "merge request" : "pull request";
   const createTitle = index.defaultBranch
-    ? `Create a pull request into ${index.defaultBranch}`
-    : "Create pull request";
+    ? `Create a ${noun} into ${index.defaultBranch}`
+    : `Create ${noun}`;
   const viewTitle = pr?.title
-    ? `View PR #${pr.number}: ${pr.title}`
-    : "View pull request";
+    ? `View ${mr ? "MR" : "PR"} ${mr ? "!" : "#"}${pr.number}: ${pr.title}`
+    : `View ${noun}`;
   const btn =
     "flex h-7 w-full min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-[12px] font-medium disabled:opacity-40";
   const secondary = `${btn} bg-content/10 text-content hover:bg-content/15`;
@@ -811,7 +817,7 @@ function GitSyncActions({
           ) : (
             <GitPullRequest className="size-3.5 shrink-0" strokeWidth={1.75} />
           )}
-          Create PR
+          Create {mr ? "MR" : "PR"}
         </button>
       ) : null}
       {showViewPr ? (
@@ -824,7 +830,9 @@ function GitSyncActions({
         >
           <ExternalLink className="size-3.5 shrink-0" strokeWidth={1.75} />
           <span className="min-w-0 truncate">
-            {pr?.number ? `View PR #${pr.number}` : "View PR"}
+            {pr?.number
+              ? `View ${mr ? "MR" : "PR"} ${mr ? "!" : "#"}${pr.number}`
+              : `View ${mr ? "MR" : "PR"}`}
           </span>
         </button>
       ) : null}
