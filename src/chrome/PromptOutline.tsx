@@ -256,7 +256,7 @@ export function PromptOutline({
       onMouseLeave={leaveRail}
       onBlur={blurRail}
       onKeyDown={onKeyDown}
-      className="absolute top-1/2 right-4 z-30 flex -translate-y-1/2 flex-col items-end @max-[62rem]:hidden"
+      className="absolute top-1/2 right-4 z-30 flex -translate-y-1/2 flex-col items-end @max-[58rem]:hidden"
     >
       {bars.map((prompt, index) => {
         const lift = barLift(index, hoverIndex);

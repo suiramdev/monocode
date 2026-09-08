@@ -78,6 +78,10 @@ jobs:
             (process.env.R2_PUBLIC_BASE_URL
               ? `${process.env.R2_PUBLIC_BASE_URL.replace(/\/$/, "")}/latest.json`
               : "");
+          if (!pubkey || !endpoint) {
+            console.error("TAURI_UPDATER_PUBKEY and an updater endpoint are required");
+            process.exit(1);
+          }
           writeFileSync(
             process.env.RUNNER_TEMP + "/tauri.release.conf.json",
             JSON.stringify(
@@ -107,6 +111,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --bundles app,dmg --config "$RUNNER_TEMP/tauri.release.conf.json"
 
+      - name: Download Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: target/release/bundle/linux
+
+      - name: Download Windows packages
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-packages
+          path: target/release/bundle/nsis
+
       - name: Upload to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -122,14 +138,30 @@ jobs:
           TAR=$(find "$BUNDLE/macos" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)
           SIG="${TAR}.sig"
           DMG=$(find "$BUNDLE/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          shopt -s nullglob
+          WINDOWS_INSTALLERS=("$BUNDLE"/nsis/*.exe)
+          WINDOWS_SIGNATURES=("$BUNDLE"/nsis/*.exe.sig)
+          if (( ${#WINDOWS_INSTALLERS[@]} != 1 || ${#WINDOWS_SIGNATURES[@]} != 1 )); then
+            echo "Expected exactly one Windows installer and updater signature" >&2
+            exit 1
+          fi
+          WINDOWS_INSTALLER="${WINDOWS_INSTALLERS[0]}"
+          WINDOWS_SIGNATURE="${WINDOWS_SIGNATURES[0]}"
           BASE="${R2_PUBLIC_BASE_URL%/}"
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           RELEASE_PREFIX="releases/${VERSION}"
           TAR_KEY="${RELEASE_PREFIX}/MonoCode.app.tar.gz"
           SIG_KEY="${TAR_KEY}.sig"
           DMG_KEY="${RELEASE_PREFIX}/MonoCode_${VERSION}_aarch64.dmg"
+          WINDOWS_INSTALLER_KEY="${RELEASE_PREFIX}/MonoCode_${VERSION}_x64-setup.exe"
+          WINDOWS_SIGNATURE_KEY="${WINDOWS_INSTALLER_KEY}.sig"
 
-          VERSION="$VERSION" SIG="$SIG" TAR_URL="$BASE/$TAR_KEY" node <<'NODE'
+          VERSION="$VERSION" \
+            SIG="$SIG" \
+            TAR_URL="$BASE/$TAR_KEY" \
+            WINDOWS_SIGNATURE="$WINDOWS_SIGNATURE" \
+            WINDOWS_INSTALLER_URL="$BASE/$WINDOWS_INSTALLER_KEY" \
+            node <<'NODE'
           const fs = require("fs");
           fs.writeFileSync(
             "latest.json",
@@ -142,6 +174,12 @@ jobs:
                   "darwin-aarch64": {
                     signature: fs.readFileSync(process.env.SIG, "utf8").trim(),
                     url: process.env.TAR_URL,
+                  },
+                  "windows-x86_64": {
+                    signature: fs
+                      .readFileSync(process.env.WINDOWS_SIGNATURE, "utf8")
+                      .trim(),
+                    url: process.env.WINDOWS_INSTALLER_URL,
                   },
                 },
               },
@@ -157,22 +195,12 @@ jobs:
           aws s3 cp "$DMG" "s3://${R2_BUCKET_NAME}/${DMG_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp "$TAR" "s3://${R2_BUCKET_NAME}/${TAR_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp "$SIG" "s3://${R2_BUCKET_NAME}/${SIG_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
+          aws s3 cp "$WINDOWS_INSTALLER" "s3://${R2_BUCKET_NAME}/${WINDOWS_INSTALLER_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
+          aws s3 cp "$WINDOWS_SIGNATURE" "s3://${R2_BUCKET_NAME}/${WINDOWS_SIGNATURE_KEY}" --cache-control "$IMMUTABLE_CACHE" --endpoint-url "$ENDPOINT"
           # Keep the website's stable DMG link, but never let the CDN retain an
           # older release under this mutable name.
           aws s3 cp "$DMG" "s3://${R2_BUCKET_NAME}/MonoCode.dmg" --cache-control "$NO_CACHE" --endpoint-url "$ENDPOINT"
           aws s3 cp latest.json "s3://${R2_BUCKET_NAME}/latest.json" --content-type "application/json" --cache-control "$NO_CACHE" --endpoint-url "$ENDPOINT"
-
-      - name: Download Linux packages
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-packages
-          path: target/release/bundle/linux
-
-      - name: Download Windows packages
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-packages
-          path: target/release/bundle/nsis
 
       - name: GitHub Release
         env:
@@ -181,21 +209,23 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           BUNDLE="target/release/bundle"
-          TAR=$(find "$BUNDLE/macos" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)
+          TAR="$BUNDLE/macos/MonoCode.app.tar.gz"
           SIG="${TAR}.sig"
-          DMG=$(find "$BUNDLE/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)
-          shopt -s nullglob
-          DEB=("$BUNDLE"/linux/*.deb)
-          APPIMAGE=("$BUNDLE"/linux/*.AppImage)
-          NSIS=("$BUNDLE"/nsis/*.exe)
-          if (( ${#DEB[@]} != 1 || ${#APPIMAGE[@]} != 1 || ${#NSIS[@]} != 1 )); then
-            echo "Expected exactly one .deb, one AppImage, and one NSIS installer" >&2
-            exit 1
-          fi
+          DMG="$BUNDLE/dmg/MonoCode_${VERSION}_aarch64.dmg"
+          DEB="$BUNDLE/linux/MonoCode_${VERSION}_amd64.deb"
+          APPIMAGE="$BUNDLE/linux/MonoCode_${VERSION}_amd64.AppImage"
+          NSIS="$BUNDLE/nsis/MonoCode_${VERSION}_x64-setup.exe"
+          NSIS_SIG="${NSIS}.sig"
+          for artifact in "$DMG" "$TAR" "$SIG" "$DEB" "$APPIMAGE" "$NSIS" "$NSIS_SIG"; do
+            if [[ ! -f "$artifact" ]]; then
+              echo "Missing release artifact: $artifact" >&2
+              exit 1
+            fi
+          done
           gh release create "$GITHUB_REF_NAME" \
             --title "MonoCode $VERSION" \
             --notes "See CHANGELOG.md for details." \
-            "$DMG" "$TAR" "$SIG" "${DEB[0]}" "${APPIMAGE[0]}" "${NSIS[0]}"
+            "$DMG" "$TAR" "$SIG" "$DEB" "$APPIMAGE" "$NSIS" "$NSIS_SIG"
 
   linux:
     name: Linux packages
@@ -253,12 +283,57 @@ jobs:
 
       - run: npm ci
 
+      - name: Write updater release config
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+          TAURI_UPDATER_ENDPOINT: ${{ secrets.TAURI_UPDATER_ENDPOINT }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          $endpoint = $env:TAURI_UPDATER_ENDPOINT
+          if ([string]::IsNullOrWhiteSpace($endpoint)) {
+            if ([string]::IsNullOrWhiteSpace($env:R2_PUBLIC_BASE_URL)) {
+              throw "TAURI_UPDATER_ENDPOINT or R2_PUBLIC_BASE_URL is required"
+            }
+            $endpoint = "$($env:R2_PUBLIC_BASE_URL.TrimEnd('/'))/latest.json"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_UPDATER_PUBKEY)) {
+            throw "TAURI_UPDATER_PUBKEY is required"
+          }
+          $config = @{
+            bundle = @{
+              createUpdaterArtifacts = $true
+            }
+            plugins = @{
+              updater = @{
+                pubkey = $env:TAURI_UPDATER_PUBKEY
+                endpoints = @($endpoint)
+              }
+            }
+          }
+          $config | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\tauri.release.conf.json"
+
       - name: Build Windows packages
-        run: npm run build:windows
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-msvc"
+          npx tauri build --bundles nsis --config "$env:RUNNER_TEMP\tauri.release.conf.json"
+
+      - name: Stage Windows packages
+        run: |
+          $installers = @(Get-ChildItem "target/release/bundle/nsis" -Filter "*.exe")
+          $signatures = @(Get-ChildItem "target/release/bundle/nsis" -Filter "*.exe.sig")
+          if ($installers.Count -ne 1 -or $signatures.Count -ne 1) {
+            throw "Expected exactly one NSIS installer and one updater signature"
+          }
+          New-Item -ItemType Directory -Force "release-artifacts" | Out-Null
+          $artifacts = @($installers[0].FullName, $signatures[0].FullName)
+          Copy-Item -Path $artifacts -Destination "release-artifacts/"
 
       - name: Upload Windows packages
         uses: actions/upload-artifact@v4
         with:
           name: windows-packages
-          path: target/release/bundle/nsis/*.exe
+          path: release-artifacts/
           if-no-files-found: error

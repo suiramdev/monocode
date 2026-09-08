@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.39] - 2026-09-08
+
+### Added
+
+- Windows releases now check for, download, and install signed updates through the same in-app update flow as macOS.
+
+### Changed
+
+- The prompt outline remains visible on slightly narrower windows.
+- Removed the scrolled transcript's top-edge fade and blur effect.
+
 ## [0.1.38] - 2026-09-08
 
 ### Added
