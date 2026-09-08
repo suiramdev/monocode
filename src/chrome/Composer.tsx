@@ -99,6 +99,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ModelSettings } from "./ModelSettings";
 import { QuestionForm } from "./QuestionForm";
 import { SkillPicker } from "./SkillPicker";
+import { WorktreePicker } from "./WorktreePicker";
 import { projectKey } from "../lib/paths";
 import { consumeQuoteRequest, type QuoteRequest } from "../lib/quoteDraft";
 import { useTabGroupLogos } from "../hooks/useTabGroupLogos";
@@ -155,7 +156,7 @@ type Props = {
   onFocus: () => void;
   onCwdChange: (cwd: string) => void;
   onBranchChange?: (branch: string) => void;
-  onWorktreeChange?: (target: { path: string; branch: string }) => void;
+  onWorktreeChange?: (target: { path: string; branch: string } | null) => void;
   onNewTerminal?: () => void;
   onModelChange: (harness: HarnessId, model: string) => void;
   onModelSettingsChange?: (settings: Record<string, string>) => void;
@@ -1182,10 +1183,19 @@ export function Composer({
                 <BranchPicker
                   cwd={executionCwd}
                   branch={branch}
-                  worktreePath={worktreePath}
                   enabled={enabled && !busy}
                   onChange={onBranchChange}
-                  onWorktree={onWorktreeChange}
+                  onClose={() => ref.current?.focus()}
+                />
+              )}
+              {hideBranchPicker || !onWorktreeChange ? null : (
+                <WorktreePicker
+                  cwd={executionCwd}
+                  projectCwd={cwd ?? executionCwd}
+                  branch={branch}
+                  worktreePath={worktreePath}
+                  enabled={enabled && !busy}
+                  onChange={onWorktreeChange}
                   onClose={() => ref.current?.focus()}
                 />
               )}

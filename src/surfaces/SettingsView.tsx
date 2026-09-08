@@ -115,11 +115,19 @@ import {
 import { prettyCwd, projectKey, projectName } from "../lib/paths";
 import { IS_MAC } from "../lib/platform";
 import {
+  knownProjectPaths,
   loadArchivedProjects,
   looksLikeProject,
+  normalizeProjectPath,
+  sameProjectPath,
   subscribeArchivedProjects,
   type ArchivedProject,
 } from "../lib/recents";
+import {
+  loadWorktreeScripts,
+  saveWorktreeScripts,
+  type WorktreeScripts,
+} from "../lib/worktreeScripts";
 import {
   HARNESSES,
   HARNESS_TITLE,
@@ -282,6 +290,7 @@ export function SettingsView({
           ) : null}
           {section === "keybindings" ? <KeybindingsPage /> : null}
           {section === "providers" ? <ProvidersPage /> : null}
+          {section === "worktrees" ? <WorktreesPage cwd={cwd} /> : null}
           {section === "archive" ? (
             <ArchivePage
               cwd={cwd}
@@ -531,15 +540,126 @@ function GeneralPage({
         />
       </Row>
 
-      <Heading title="Git" />
-      <WorktreeRootRow />
-
       <Heading title="Linear" />
       <LinearSettings />
 
       <Heading title="About" />
       <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
     </>
+  );
+}
+
+function WorktreesPage({ cwd }: { cwd: string }) {
+  const projects = useMemo(() => {
+    const known = knownProjectPaths().filter(looksLikeProject);
+    if (!looksLikeProject(cwd)) return known;
+    const current = normalizeProjectPath(cwd);
+    return [
+      current,
+      ...known.filter((path) => !sameProjectPath(path, current)),
+    ];
+  }, [cwd]);
+  const [project, setProject] = useState(projects[0] ?? "");
+  const [scripts, setScripts] = useState<WorktreeScripts>(() =>
+    loadWorktreeScripts(projects[0] ?? ""),
+  );
+
+  const pick = (path: string) => {
+    setProject(path);
+    setScripts(loadWorktreeScripts(path));
+  };
+
+  const edit = (patch: Partial<WorktreeScripts>) => {
+    const next = { ...scripts, ...patch };
+    setScripts(next);
+    if (project) saveWorktreeScripts(project, next);
+  };
+
+  return (
+    <>
+      <Heading title="New worktrees" first />
+      <WorktreeRootRow />
+
+      <Heading title="Session scripts" />
+      {project ? (
+        <>
+          <Row
+            label="Project"
+            description="Scripts belong to one project. Every worktree session in it runs them."
+          >
+            <span className="max-w-64 truncate font-mono text-[12px] text-content/50">
+              {prettyCwd(project)}
+            </span>
+            <Select
+              label="Project"
+              value={project}
+              options={projects.map((path) => ({
+                value: path,
+                label: projectName(path),
+              }))}
+              onChange={pick}
+            />
+          </Row>
+          <ScriptField
+            label="Setup script"
+            description="Runs in a worktree MonoCode has just created, before the session opens. Reusing an existing worktree runs nothing. A failure is reported and leaves the worktree in place."
+            placeholder={"npm install\ncp ../../.env .env"}
+            value={scripts.setup}
+            onChange={(setup) => edit({ setup })}
+          />
+          <ScriptField
+            label="Teardown script"
+            description="Runs inside the worktree just before MonoCode removes it, when you tear a worktree session down and choose to remove its worktree. A failure stops the removal until you confirm it anyway."
+            placeholder="docker compose down"
+            value={scripts.teardown}
+            onChange={(teardown) => edit({ teardown })}
+          />
+          <Row
+            label="What a script gets"
+            description="Both run through your shell, with the worktree as the working directory and MONOCODE_EVENT, MONOCODE_PROJECT_DIR, MONOCODE_WORKTREE_DIR, MONOCODE_WORKTREE_NAME and MONOCODE_WORKTREE_BRANCH in the environment. A script that has not finished in 10 minutes is stopped."
+          />
+        </>
+      ) : (
+        <p className="py-3 text-[12px] text-content/45">
+          Open a project to give its worktrees setup and teardown scripts.
+        </p>
+      )}
+    </>
+  );
+}
+
+function ScriptField({
+  label,
+  description,
+  placeholder,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="border-b border-content/5 py-4 last:border-b-0">
+      <div className="text-[13px] font-medium text-content">{label}</div>
+      <p className="mt-1 max-w-xl text-[12px] leading-relaxed text-content/45">
+        {description}
+      </p>
+      <textarea
+        aria-label={label}
+        value={value}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        rows={4}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 w-full resize-y rounded-md border border-content/10 bg-content/5 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-content outline-none placeholder:text-content/30 hover:border-content/20 focus:border-content/25"
+      />
+    </div>
   );
 }
 
@@ -554,7 +674,7 @@ function WorktreeRootRow() {
   return (
     <Row
       label="Worktree folder"
-      description="New worktrees from the branch picker are created here, one folder per repository and branch."
+      description="New worktrees from the composer's worktree menu are created here, one folder per repository and worktree."
     >
       <span className="max-w-64 truncate font-mono text-[12px] text-content/70">
         {root ? prettyCwd(root) : WORKTREE_ROOT_DEFAULT_LABEL}

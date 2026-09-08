@@ -1,11 +1,4 @@
-import {
-  Check,
-  Folder,
-  FolderPlus,
-  GitBranch,
-  Plus,
-  Search,
-} from "./icons";
+import { Check, GitBranch, Plus, Search } from "./icons";
 import {
   useEffect,
   useMemo,
@@ -19,15 +12,10 @@ import {
   gitCreateBranch,
   gitStageAll,
   gitStash,
-  gitWorktreeAdd,
-  gitWorktrees,
   isCheckoutBlockedByChanges,
   notifyGitChanged,
-  type GitWorktreeInfo,
 } from "../lib/fs";
 import { buildBranchRows, type BranchRow } from "../lib/branchRows";
-import { prettyCwd } from "../lib/paths";
-import { loadWorktreeRoot } from "../lib/settings";
 import { useLockOverscroll } from "../hooks/useLockOverscroll";
 import { useProjectBranchesState } from "../hooks/useProjectBranches";
 import { Popover } from "./Popover";
@@ -36,10 +24,8 @@ import { SwitchBranchDialog } from "./SwitchBranchDialog";
 type Props = {
   cwd: string;
   branch?: string;
-  worktreePath?: string;
   enabled?: boolean;
   onChange?: (branch: string) => void;
-  onWorktree?: (target: { path: string; branch: string }) => void;
   onClose?: () => void;
 };
 
@@ -55,10 +41,8 @@ const MENU_MAX_HEIGHT = 280;
 export function BranchPicker({
   cwd,
   branch,
-  worktreePath,
   enabled = true,
   onChange,
-  onWorktree,
   onClose,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -71,16 +55,12 @@ export function BranchPicker({
   const [blockedBusy, setBlockedBusy] = useState<"stash" | "commit" | null>(
     null,
   );
-  const [worktrees, setWorktrees] = useState<GitWorktreeInfo[]>([]);
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-  const onWorktreeRef = useRef(onWorktree);
-  onWorktreeRef.current = onWorktree;
-  const allowWorktrees = Boolean(onWorktree);
 
   const inProject = Boolean(cwd) && cwd !== "~";
   const { branches: projectBranches, settled: branchesSettled } =
@@ -111,23 +91,6 @@ export function BranchPicker({
     if (open) search.current?.focus();
   }, [open]);
 
-  // Worktrees only matter while the menu is open, and `git worktree list`
-  // shells out — load it on open rather than with every branch refresh.
-  useEffect(() => {
-    if (!open || !allowWorktrees) return;
-    let cancelled = false;
-    void gitWorktrees(cwd)
-      .then((list) => {
-        if (!cancelled) setWorktrees(list);
-      })
-      .catch(() => {
-        if (!cancelled) setWorktrees([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [allowWorktrees, cwd, open]);
-
   useEffect(() => {
     if (enabled) return;
     setOpen(false);
@@ -143,13 +106,10 @@ export function BranchPicker({
     () =>
       buildBranchRows({
         branches: projectBranches?.branches ?? [],
-        worktrees,
         query,
         selected: branch || projectBranches?.current || null,
-        workCwd: cwd,
-        allowWorktrees,
       }),
-    [allowWorktrees, branch, cwd, projectBranches, query, worktrees],
+    [branch, projectBranches, query],
   );
 
   useEffect(() => {
@@ -195,28 +155,6 @@ export function BranchPicker({
     }
   };
 
-  // Creating a worktree never touches this checkout, so a failure is reported
-  // in the menu instead of offering to stash or commit.
-  const runWorktree = async (name: string, exists: boolean) => {
-    if (busy || blocked) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const target = await gitWorktreeAdd(cwd, {
-        name,
-        create: !exists,
-        root: loadWorktreeRoot(),
-      });
-      notifyGitChanged();
-      onWorktreeRef.current?.(target);
-      dismiss(true);
-    } catch (err) {
-      setError(failMessage(err));
-      setBusy(false);
-      search.current?.focus();
-    }
-  };
-
   const resolveBlocked = async (
     kind: "stash" | "commit",
     work: () => Promise<unknown>,
@@ -237,18 +175,6 @@ export function BranchPicker({
   const pick = (row: BranchRow) => {
     if (row.kind === "create") {
       void run({ kind: "create", name: row.name });
-      return;
-    }
-    if (row.kind === "create-worktree") {
-      void runWorktree(row.name, row.exists);
-      return;
-    }
-    if (row.kind === "worktree") {
-      onWorktreeRef.current?.({
-        path: row.worktree.path,
-        branch: row.worktree.branch ?? row.worktree.head,
-      });
-      dismiss(true);
       return;
     }
     if (row.branch.current) {
@@ -292,18 +218,15 @@ export function BranchPicker({
       ? `detached ${current}`
       : current
     : "No repo";
-  const worktreeLabel = worktreePath ? prettyCwd(worktreePath) : null;
   const title = awaitingBranch
     ? "Loading branch…"
     : missingGit
       ? "No git repository"
-      : worktreeLabel
-        ? `${label} · worktree ${worktreeLabel}`
-        : label;
+      : label;
   const interactive = enabled && !awaitingBranch && !missingGit;
 
   return (
-    <div className="flex max-w-[45%] shrink-0 items-center gap-2.5">
+    <div className="flex min-w-0 shrink items-center">
       <div ref={root} className="relative min-w-0">
         <button
           type="button"
@@ -313,9 +236,7 @@ export function BranchPicker({
               ? "Loading branch"
               : missingGit
                 ? "No git repository"
-                : worktreeLabel
-                  ? `Branch ${label} in worktree ${worktreeLabel}`
-                  : `Branch ${label}`
+                : `Branch ${label}`
           }
           aria-expanded={missingGit ? undefined : open}
           aria-haspopup={missingGit ? undefined : "dialog"}
@@ -474,18 +395,12 @@ function BranchList({
       {rows.map((row, index) => {
         const highlighted = index === active;
         const selected = row.kind === "branch" && row.branch.current;
-        const create =
-          row.kind === "create" || row.kind === "create-worktree";
         return (
           <button
             key={
               row.kind === "create"
                 ? `create:${row.name}`
-                : row.kind === "create-worktree"
-                  ? `create-worktree:${row.name}`
-                  : row.kind === "worktree"
-                    ? `worktree:${row.worktree.path}`
-                    : `${row.branch.remote ?? "local"}:${row.branch.name}`
+                : `${row.branch.remote ?? "local"}:${row.branch.name}`
             }
             ref={highlighted ? activeRef : undefined}
             type="button"
@@ -496,7 +411,7 @@ function BranchList({
             onMouseEnter={() => onActive(index)}
             onClick={() => onPick(row)}
             className={
-              create
+              row.kind === "create"
                 ? `mb-1 flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left disabled:opacity-60 ${
                     highlighted
                       ? "bg-content/15 text-content"
@@ -514,26 +429,6 @@ function BranchList({
                 <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
                 <span className="min-w-0 truncate text-[12px]">
                   Create and checkout {row.name}
-                </span>
-              </>
-            ) : row.kind === "create-worktree" ? (
-              <>
-                <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
-                <span className="min-w-0 truncate text-[12px]">
-                  {row.exists ? "Open" : "Create"} {row.name} in a new worktree
-                </span>
-              </>
-            ) : row.kind === "worktree" ? (
-              <>
-                <Folder
-                  className="size-3.5 shrink-0 text-content/50"
-                  strokeWidth={1.75}
-                />
-                <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
-                  {row.worktree.branch ?? row.worktree.head}
-                </span>
-                <span className="max-w-[45%] shrink-0 truncate text-[10px] text-content/40">
-                  {prettyCwd(row.worktree.path)}
                 </span>
               </>
             ) : (

@@ -270,28 +270,33 @@ export type GitWorktreeInfo = {
   branch: string | null;
   head: string;
   main: boolean;
+  /** Branch this worktree was cut from, when MonoCode created it. */
+  base: string | null;
 };
 
-export type GitWorktreeAdd = { path: string; branch: string };
+export type GitWorktreeAdd = {
+  path: string;
+  branch: string;
+  /** False when the branch already had a worktree and this reused it. */
+  created: boolean;
+};
 
 export function gitWorktrees(cwd: string): Promise<GitWorktreeInfo[]> {
   return invoke<GitWorktreeInfo[]>("git_worktrees", { cwd });
 }
 
+/**
+ * Open the worktree named `name`: an existing one holding that branch, a
+ * worktree for an existing branch of that name, or a new branch off `base`.
+ */
 export function gitWorktreeAdd(
   cwd: string,
-  input: {
-    name: string;
-    remote?: string | null;
-    create: boolean;
-    root: string | null;
-  },
+  input: { name: string; base: string | null; root: string | null },
 ): Promise<GitWorktreeAdd> {
   return invoke<GitWorktreeAdd>("git_worktree_add", {
     cwd,
     name: input.name,
-    remote: input.remote ?? null,
-    create: input.create,
+    base: input.base,
     root: input.root,
   });
 }
@@ -301,6 +306,15 @@ export function gitWorktreeValid(
   worktree: string,
 ): Promise<boolean> {
   return invoke<boolean>("git_worktree_valid", { cwd, worktree });
+}
+
+/** Drop a linked worktree; `force` discards the changes inside it. */
+export function gitWorktreeRemove(
+  cwd: string,
+  worktree: string,
+  force: boolean,
+): Promise<void> {
+  return invoke<void>("git_worktree_remove", { cwd, worktree, force });
 }
 
 /** Git refused a checkout because the working tree would be overwritten. */

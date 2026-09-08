@@ -14,6 +14,7 @@ import {
 import { Sidebar } from "./chrome/Sidebar";
 import { ApprovalToasts } from "./chrome/ApprovalToasts";
 import { WhatsNewDialog } from "./chrome/WhatsNewDialog";
+import { RemoveWorktreeDialog } from "./chrome/RemoveWorktreeDialog";
 import { TitleBar, type Tab as TitleTab } from "./chrome/TitleBar";
 import { MenuBar } from "./chrome/MenuBar";
 import { FilePicker } from "./chrome/FilePicker";
@@ -44,6 +45,8 @@ import {
   restoreSessionCheckout,
   type GitHistoryCommit,
 } from "./lib/fs";
+import { loadWorktreeScripts } from "./lib/worktreeScripts";
+import { tearDownWorktree } from "./lib/worktreeTeardown";
 import {
   invalidateProjectFiles,
   prefetchProjectFiles,
@@ -411,6 +414,27 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
 
 type ScheduledFlush = { kind: "raf" | "timeout"; id: number };
 
+/** Keep the working copy, remove it, or call the whole teardown off. */
+type WorktreeTeardownDecision = {
+  action: "keep" | "remove" | "cancel";
+  force: boolean;
+};
+
+/** What the worktree teardown dialog shows, and how far the removal has got. */
+type WorktreeTeardownPrompt = {
+  mode: "archive" | "delete";
+  project: string;
+  worktree: string;
+  branch?: string;
+  /** The project has a teardown script to run before removing the folder. */
+  script: boolean;
+  /** Set once the script has run, so a retry does not run it twice. */
+  scriptDone: boolean;
+  stage: "ask" | "working";
+  status: string | null;
+  error: string | null;
+};
+
 function cancelScheduledFlush(handle: ScheduledFlush | null) {
   if (!handle) return;
   if (handle.kind === "raf") cancelAnimationFrame(handle.id);
@@ -627,6 +651,11 @@ export default function App({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateNotice, setUpdateNotice] = useState(installedUpdate);
   const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
+  const [worktreeTeardown, setWorktreeTeardown] =
+    useState<WorktreeTeardownPrompt | null>(null);
+  const worktreeDecision = useRef<
+    ((decision: WorktreeTeardownDecision) => void) | null
+  >(null);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSectionId>(loadSettingsSection);
   const [editorNavigation, setEditorNavigation] =
@@ -2696,6 +2725,61 @@ export default function App({
     [persistSession, refreshHistory, sidebarCwd],
   );
 
+  /**
+   * A torn-down worktree session leaves its working copy behind unless the user
+   * says otherwise. The prompt runs before the session stops; the removal runs
+   * after, so nothing is still working inside the folder.
+   */
+  const askWorktreeTeardown = useCallback(
+    (prompt: {
+      mode: "archive" | "delete";
+      project: string;
+      worktree: string;
+      branch?: string;
+    }) =>
+      new Promise<WorktreeTeardownDecision>((resolve) => {
+        worktreeDecision.current = resolve;
+        setWorktreeTeardown({
+          ...prompt,
+          script: Boolean(loadWorktreeScripts(prompt.project).teardown),
+          scriptDone: false,
+          stage: "ask",
+          status: null,
+          error: null,
+        });
+      }),
+    [],
+  );
+
+  const settleWorktreeTeardown = useCallback(
+    (decision: WorktreeTeardownDecision) => {
+      const resolve = worktreeDecision.current;
+      worktreeDecision.current = null;
+      setWorktreeTeardown(null);
+      resolve?.(decision);
+    },
+    [],
+  );
+
+  const runWorktreeTeardown = useCallback(
+    async (target: WorktreeTeardownPrompt, force: boolean) => {
+      await tearDownWorktree(target, force, (progress) => {
+        if (progress.done) {
+          setWorktreeTeardown(null);
+          return;
+        }
+        setWorktreeTeardown({
+          ...target,
+          stage: "working",
+          status: progress.status,
+          scriptDone: progress.scriptDone,
+          error: progress.error,
+        });
+      });
+    },
+    [],
+  );
+
   const onRemoveHistorySession = useCallback(
     async (
       sessionId: string,
@@ -2721,8 +2805,13 @@ export default function App({
       removingSessionIds.current.add(sessionId);
       pendingPersist.current.delete(sessionId);
       let savedSummary: SessionSummary | undefined;
+      // A box, not a plain `let`: the plan is filled in from confirmClose, and
+      // the compiler cannot see a closure write through a narrowed binding.
+      const teardown: {
+        plan: { target: WorktreeTeardownPrompt; force: boolean } | null;
+      } = { plan: null };
       try {
-        return await runSessionRemoval({
+        const removed = await runSessionRemoval({
           sessionId,
           scope: tabCloseScope,
           readWorkspace: () => ({
@@ -2753,9 +2842,47 @@ export default function App({
             )
               return false;
             const terminals = files.filter((file) => file.terminal);
-            return (
-              terminals.length === 0 || (await confirmCloseTerminals(terminals))
+            if (
+              terminals.length > 0 &&
+              !(await confirmCloseTerminals(terminals))
+            )
+              return false;
+
+            // Its own working copy goes only if the user says so, and only
+            // when no other open session is still living in it.
+            const live = sessionsRef.current.find(
+              (session) => session.id === sessionId,
             );
+            const worktree = live?.worktreeCwd;
+            if (!live || !worktree) return true;
+            const shared = sessionsRef.current.some(
+              (session) =>
+                session.id !== sessionId &&
+                session.worktreeCwd &&
+                sameProjectPath(session.worktreeCwd, worktree),
+            );
+            if (shared) return true;
+            const prompt = {
+              mode,
+              project: live.cwd,
+              worktree,
+              ...(live.branch ? { branch: live.branch } : {}),
+            };
+            const decision = await askWorktreeTeardown(prompt);
+            if (decision.action === "cancel") return false;
+            if (decision.action === "keep") return true;
+            teardown.plan = {
+              target: {
+                ...prompt,
+                script: Boolean(loadWorktreeScripts(live.cwd).teardown),
+                scriptDone: false,
+                stage: "working",
+                status: null,
+                error: null,
+              },
+              force: decision.force,
+            };
+            return true;
           },
           stop: async () => {
             await stopSessionForRemoval(sessionId);
@@ -2832,6 +2959,12 @@ export default function App({
             }
           },
         });
+        if (removed && teardown.plan) {
+          await runWorktreeTeardown(teardown.plan.target, teardown.plan.force);
+        } else if (teardown.plan) {
+          setWorktreeTeardown(null);
+        }
+        return removed;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         void message(`Could not ${mode} this conversation.\n\n${detail}`, {
@@ -2845,8 +2978,10 @@ export default function App({
     },
     [
       activateTab,
+      askWorktreeTeardown,
       history,
       refreshHistory,
+      runWorktreeTeardown,
       sidebarCwd,
       stopSessionForRemoval,
       tabCloseScope,
@@ -3088,20 +3223,21 @@ export default function App({
   );
 
   const onWorktreeChange = useCallback(
-    (sessionId: string, target: { path: string; branch: string }) => {
+    (sessionId: string, target: { path: string; branch: string } | null) => {
       const current = sessionsRef.current.find((s) => s.id === sessionId);
       if (!current) return;
-      const path = normalizeProjectPath(target.path);
+      // A null target is the project checkout, where a session owns no branch.
+      const move = target
+        ? {
+            worktreeCwd: normalizeProjectPath(target.path),
+            branch: target.branch,
+          }
+        : { worktreeCwd: undefined, branch: undefined };
       if (isBlankSession(current)) {
         if (current.providerSessionId) {
           void forgetHarnessSession(current.harness, sessionId);
         }
-        const next = {
-          ...current,
-          worktreeCwd: path,
-          branch: target.branch,
-          providerSessionId: undefined,
-        };
+        const next = { ...current, ...move, providerSessionId: undefined };
         setSessions((prev) => prev.map((s) => (s.id === sessionId ? next : s)));
         persistSession(next);
         notifyGitChanged();
@@ -3109,7 +3245,7 @@ export default function App({
         return;
       }
       // Threads stay bound to the working copy they ran in, so a started
-      // conversation opens a new session on the worktree instead.
+      // conversation opens a new session on the picked one instead.
       const session = {
         ...newSession(
           current.harness,
@@ -3118,8 +3254,7 @@ export default function App({
           current.runtimeMode,
           current.modelSettings,
         ),
-        worktreeCwd: path,
-        branch: target.branch,
+        ...move,
       };
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
@@ -5536,6 +5671,39 @@ export default function App({
         <WhatsNewDialog
           version={whatsNewVersion}
           onClose={() => setWhatsNewVersion(null)}
+        />
+      ) : null}
+      {worktreeTeardown ? (
+        <RemoveWorktreeDialog
+          worktree={worktreeTeardown.worktree}
+          branch={worktreeTeardown.branch}
+          mode={worktreeTeardown.mode}
+          script={worktreeTeardown.script}
+          stage={worktreeTeardown.stage}
+          status={worktreeTeardown.status}
+          error={worktreeTeardown.error}
+          onKeep={() => {
+            if (worktreeTeardown.stage === "ask") {
+              settleWorktreeTeardown({ action: "keep", force: false });
+              return;
+            }
+            // The removal already failed; leaving the worktree is the way out.
+            setWorktreeTeardown(null);
+          }}
+          onRemove={(force) => {
+            if (worktreeTeardown.stage === "ask") {
+              settleWorktreeTeardown({ action: "remove", force });
+              return;
+            }
+            void runWorktreeTeardown(worktreeTeardown, force);
+          }}
+          onCancel={() => {
+            if (worktreeTeardown.stage === "ask") {
+              settleWorktreeTeardown({ action: "cancel", force: false });
+              return;
+            }
+            setWorktreeTeardown(null);
+          }}
         />
       ) : null}
     </div>
