@@ -9,10 +9,12 @@ name: Sync fork
 # upstream edits its own workflows. Such a sync stops here with an explanatory
 # failure unless the repository has a SYNC_FORK_TOKEN secret: a fine-grained
 # PAT for this repository with Contents read/write and Workflows read/write.
+#
+# No `schedule:` here on purpose - GitHub never fires scheduled workflows in a
+# forked repository (measured: three cron slots skipped). The clock lives in a
+# separate non-fork repository that dispatches this workflow.
 
 on:
-  schedule:
-    - cron: "20,25,30 10 * * *"
   workflow_dispatch:
 
 concurrency:

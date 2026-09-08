@@ -4,8 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const version = process.argv[2];
-if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
-  console.error("usage: npm run set-version -- 0.1.1");
+// The fork releases upstream's version plus its own counter: 0.1.39-mono.2.
+if (!version || !/^\d+\.\d+\.\d+(-mono\.\d+)?$/.test(version)) {
+  console.error("usage: npm run set-version -- 0.1.1[-mono.1]");
   process.exit(1);
 }
 
