@@ -66,6 +66,13 @@ export type GitChangedFile = {
   unstaged: boolean;
 };
 
+export type GitForge = "github" | "gitlab";
+
+/** Forge behind the project's `origin`, so the UI can say MR instead of PR. */
+export function gitForge(cwd: string): Promise<GitForge> {
+  return invoke<GitForge>("git_forge", { cwd });
+}
+
 export type GitDiffIndex = {
   branch: string | null;
   files: GitChangedFile[];
@@ -77,6 +84,7 @@ export type GitDiffIndex = {
   ahead: number;
   behind: number;
   aheadOfDefault: number;
+  forge: GitForge | null;
 };
 
 export function gitDiffIndex(cwd: string): Promise<GitDiffIndex> {

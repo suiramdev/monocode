@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   applyInboxFilters,
   DEFAULT_INBOX_FILTERS,
@@ -10,9 +10,11 @@ import {
   filterInboxByTime,
   hasActiveInboxFilters,
   inboxFetchState,
+  loadInboxSource,
   LINEAR_NO_PROJECT,
   linearProjectOptions,
   pruneInboxFilters,
+  saveInboxSource,
 } from "./inboxFilters";
 import type { InboxItem } from "./githubTasks";
 
@@ -446,3 +448,33 @@ describe("pruneInboxFilters", () => {
     expect(pruned.hiddenProjects).toEqual(["/tmp/web"]);
   });
 });
+
+describe("loadInboxSource", () => {
+  beforeEach(mockLocalStorage);
+
+  it("restores every known provider and falls back to GitHub", () => {
+    expect(loadInboxSource()).toBe("github");
+    for (const source of ["gitlab", "linear", "github"] as const) {
+      saveInboxSource(source);
+      expect(loadInboxSource()).toBe(source);
+    }
+    localStorage.setItem("monocode.inboxSource", "bitbucket");
+    expect(loadInboxSource()).toBe("github");
+  });
+});
+
+function mockLocalStorage() {
+  const data = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", {
+    value: {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        data.set(key, value);
+      },
+      removeItem: (key: string) => {
+        data.delete(key);
+      },
+    },
+    configurable: true,
+  });
+}

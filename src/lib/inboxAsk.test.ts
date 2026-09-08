@@ -38,6 +38,14 @@ describe("inbox sessions", () => {
     expect(
       inboxAskKey({ provider: "linear", id: "issue-uuid" } as InboxItem),
     ).toBe("linear:issue-uuid");
+    expect(
+      inboxAskKey({
+        provider: "gitlab",
+        url: "https://gitlab.dotblocks.fr/dotblocks/platform/app/-/merge_requests/7",
+      } as InboxItem),
+    ).toBe(
+      "gitlab:gitlab.dotblocks.fr:/dotblocks/platform/app/-/merge_requests/7",
+    );
   });
 
   it("adds the remote-access instruction on follow-ups and leaves ordinary sessions alone", () => {

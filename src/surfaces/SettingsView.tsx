@@ -131,6 +131,7 @@ import {
 } from "../lib/sessionFilters";
 import type { SessionSummary } from "../lib/sessionStore";
 import { clearInboxCache } from "../lib/githubTasks";
+import { gitlabStatus } from "../lib/gitlab";
 import {
   disconnectLinear,
   LINEAR_CHANGE_EVENT,
@@ -530,6 +531,9 @@ function GeneralPage({
       <Heading title="Linear" />
       <LinearSettings />
 
+      <Heading title="GitLab" />
+      <GitlabSettings />
+
       <Heading title="About" />
       <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
     </>
@@ -696,6 +700,53 @@ function LinearSettings() {
         </div>
       ) : null}
     </>
+  );
+}
+
+function GitlabSettings() {
+  const [installed, setInstalled] = useState(false);
+  const [version, setVersion] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const probe = useCallback(async () => {
+    setBusy(true);
+    try {
+      const status = await gitlabStatus();
+      setInstalled(status.installed);
+      setVersion(status.version);
+    } catch {
+      setInstalled(false);
+      setVersion("");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void probe();
+  }, [probe]);
+
+  return (
+    <Row
+      label={
+        <span className="flex items-center gap-2">
+          <InboxProviderMark provider="gitlab" className="size-4 shrink-0" />
+          GitLab CLI
+        </span>
+      }
+      description={
+        installed
+          ? `${version}. Projects whose origin is a GitLab host show their issues and merge requests in the Inbox.`
+          : "Install glab and run `glab auth login` to see GitLab issues and merge requests in the Inbox."
+      }
+    >
+      <SecondaryButton
+        onClick={() => void probe().then(() => clearInboxCache())}
+        disabled={busy}
+      >
+        Refresh
+      </SecondaryButton>
+    </Row>
   );
 }
 

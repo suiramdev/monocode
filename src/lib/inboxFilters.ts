@@ -65,7 +65,7 @@ const SOURCE_KEY = "monocode.inboxSource";
 export function loadInboxSource(): InboxSource {
   try {
     const raw = localStorage.getItem(SOURCE_KEY);
-    return raw === "linear" ? "linear" : "github";
+    return raw === "linear" || raw === "gitlab" ? raw : "github";
   } catch {
     return "github";
   }

@@ -1,4 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
+import { gitForge } from "./fs";
+import {
+  gitlabMrDiff,
+  gitlabRepo,
+  gitlabWorkItemComment,
+  gitlabWorkItemDetails,
+  gitlabWorkItemThread,
+  listGitlabWorkItems,
+} from "./gitlab";
 import {
   linearConnected,
   linearTeamIdsForFetch,
@@ -40,7 +49,8 @@ export type GithubWorkItem = {
   repo: string;
 };
 
-export type InboxProvider = "github" | "linear";
+export type ForgeProvider = "github" | "gitlab";
+export type InboxProvider = ForgeProvider | "linear";
 
 export type InboxItem = Omit<GithubWorkItem, "kind"> & {
   kind: InboxKind;
@@ -134,6 +144,7 @@ type InboxListCache = InboxListResult & {
 let inboxListCache: InboxListCache | null = null;
 const inboxListInflight = new Map<string, Promise<InboxListResult>>();
 const repoByPath = new Map<string, string>();
+const forgeByPath = new Map<string, ForgeProvider>();
 const detailsByKey = new Map<string, GithubWorkItemDetails>();
 const threadByKey = new Map<string, GithubWorkItemThread>();
 const threadInflight = new Map<string, Promise<GithubWorkItemThread>>();
@@ -144,6 +155,7 @@ export function clearInboxCache() {
   inboxListCache = null;
   inboxListInflight.clear();
   repoByPath.clear();
+  forgeByPath.clear();
   detailsByKey.clear();
   threadByKey.clear();
   threadInflight.clear();
@@ -191,11 +203,41 @@ export function inboxListIsFresh(
   );
 }
 
-export async function githubRepo(cwd: string): Promise<string> {
+/** Which forge a project talks to. Cached because the Rust side shells out to git. */
+export async function projectForge(cwd: string): Promise<ForgeProvider> {
   const key = normalizeProjectPath(cwd);
+  const cached = forgeByPath.get(key);
+  if (cached !== undefined) return cached;
+  const forge = await gitForge(cwd);
+  forgeByPath.set(key, forge);
+  return forge;
+}
+
+export function githubRepo(cwd: string): Promise<string> {
+  return cachedRepo("github", cwd, () =>
+    invoke<string>("git_github_repo", { cwd }),
+  );
+}
+
+export function forgeRepo(
+  provider: ForgeProvider,
+  cwd: string,
+): Promise<string> {
+  if (provider === "gitlab") {
+    return cachedRepo("gitlab", cwd, () => gitlabRepo(cwd));
+  }
+  return githubRepo(cwd);
+}
+
+async function cachedRepo(
+  provider: ForgeProvider,
+  cwd: string,
+  load: () => Promise<string>,
+): Promise<string> {
+  const key = `${provider}:${normalizeProjectPath(cwd)}`;
   const cached = repoByPath.get(key);
   if (cached !== undefined) return cached;
-  const repo = await invoke<string>("git_github_repo", { cwd });
+  const repo = await load();
   repoByPath.set(key, repo);
   return repo;
 }
@@ -286,7 +328,7 @@ export function detailsCacheKey(
   return `${normalizeProjectPath(cwd)}:${kind}:${number}`;
 }
 
-export function peekGithubWorkItemDetails(
+export function peekForgeWorkItemDetails(
   cwd: string,
   kind: GithubTaskKind,
   number: number,
@@ -294,20 +336,25 @@ export function peekGithubWorkItemDetails(
   return detailsByKey.get(detailsCacheKey(cwd, kind, number)) ?? null;
 }
 
-export async function githubWorkItemDetails(
+export async function forgeWorkItemDetails(
+  provider: ForgeProvider,
   cwd: string,
   kind: GithubTaskKind,
   number: number,
 ): Promise<GithubWorkItemDetails> {
-  const details = await invoke<GithubWorkItemDetails>(
-    "git_github_work_item_details",
-    { cwd, kind, number },
-  );
+  const details =
+    provider === "gitlab"
+      ? await gitlabWorkItemDetails(cwd, kind, number)
+      : await invoke<GithubWorkItemDetails>("git_github_work_item_details", {
+          cwd,
+          kind,
+          number,
+        });
   detailsByKey.set(detailsCacheKey(cwd, kind, number), details);
   return details;
 }
 
-export function peekGithubWorkItemThread(
+export function peekForgeWorkItemThread(
   cwd: string,
   kind: GithubTaskKind,
   number: number,
@@ -315,7 +362,8 @@ export function peekGithubWorkItemThread(
   return threadByKey.get(detailsCacheKey(cwd, kind, number)) ?? null;
 }
 
-export async function githubWorkItemThread(
+export async function forgeWorkItemThread(
+  provider: ForgeProvider,
   cwd: string,
   kind: GithubTaskKind,
   number: number,
@@ -328,11 +376,15 @@ export async function githubWorkItemThread(
   }
   const pending = threadInflight.get(key);
   if (pending) return pending;
-  const promise = invoke<GithubWorkItemThread>("git_github_work_item_thread", {
-    cwd,
-    kind,
-    number,
-  })
+  const promise = (
+    provider === "gitlab"
+      ? gitlabWorkItemThread(cwd, kind, number)
+      : invoke<GithubWorkItemThread>("git_github_work_item_thread", {
+          cwd,
+          kind,
+          number,
+        })
+  )
     .then((thread) => {
       threadByKey.set(key, thread);
       return thread;
@@ -344,20 +396,32 @@ export async function githubWorkItemThread(
   return promise;
 }
 
-export async function githubWorkItemComment(
+export async function forgeWorkItemComment(
+  provider: ForgeProvider,
   cwd: string,
   kind: GithubTaskKind,
   number: number,
   body: string,
-  options?: { inReplyTo?: string },
+  options?: { inReplyTo?: string; threadId?: string },
 ): Promise<string> {
-  const url = await invoke<string>("git_github_work_item_comment", {
-    cwd,
-    kind,
-    number,
-    body: body.trim(),
-    inReplyTo: options?.inReplyTo?.trim() ?? "",
-  });
+  const text = body.trim();
+  const url =
+    provider === "gitlab"
+      ? // GitLab replies attach to the discussion, not to the note replied to.
+        await gitlabWorkItemComment(
+          cwd,
+          kind,
+          number,
+          text,
+          options?.threadId ?? options?.inReplyTo ?? "",
+        )
+      : await invoke<string>("git_github_work_item_comment", {
+          cwd,
+          kind,
+          number,
+          body: text,
+          inReplyTo: options?.inReplyTo?.trim() ?? "",
+        });
   const key = detailsCacheKey(cwd, kind, number);
   threadByKey.delete(key);
   threadInflight.delete(key);
@@ -396,21 +460,26 @@ export function prDiffCacheKey(cwd: string, number: number): string {
   return `${normalizeProjectPath(cwd)}:pr:${number}`;
 }
 
-export function peekGithubPrDiff(
+export function peekForgePrDiff(
   cwd: string,
   number: number,
 ): GithubPrDiff | null {
   return prDiffByKey.get(prDiffCacheKey(cwd, number)) ?? null;
 }
 
-export async function githubPrDiff(
+export async function forgePrDiff(
+  provider: ForgeProvider,
   cwd: string,
   number: number,
 ): Promise<GithubPrDiff> {
   const key = prDiffCacheKey(cwd, number);
   const pending = prDiffInflight.get(key);
   if (pending) return pending;
-  const promise = invoke<GithubPrDiff>("git_github_pr_diff", { cwd, number })
+  const promise = (
+    provider === "gitlab"
+      ? gitlabMrDiff(cwd, number)
+      : invoke<GithubPrDiff>("git_github_pr_diff", { cwd, number })
+  )
     .then((diff) => {
       prDiffByKey.set(key, diff);
       return diff;
@@ -453,37 +522,38 @@ async function fetchInboxItems(
   const preferredPaths = unique.map((project) => project.path);
   const resolved = await Promise.all(
     unique.map(async (project) => {
+      let forge: ForgeProvider = "github";
       try {
+        forge = await projectForge(project.path);
         return {
           path: project.path,
-          repo: (await githubRepo(project.path)).trim(),
+          repo: (await forgeRepo(forge, project.path)).trim(),
+          forge,
         };
       } catch {
-        return { path: project.path, repo: "" };
+        return { path: project.path, repo: "", forge };
       }
     }),
   );
   const grouped = groupProjectsByRepo(resolved);
-  const githubJobs = grouped.flatMap((project) =>
-    (["issue", "pr"] as const).map(async (kind) => {
-      const items = await listGithubWorkItems(project.path, {
-        ...query,
-        kind,
-      });
-      return items.map((item) => ({
-        ...item,
-        projectPath: project.path,
-        provider: "github" as const,
-        repo: item.repo || project.repo,
-      }));
-    }),
-  );
-  const github = collectInboxResults(
-    await Promise.allSettled(githubJobs),
-    preferredPaths,
+  const jobs = grouped.flatMap((project) =>
+    (["issue", "pr"] as const).map((kind) => ({
+      forge: project.forge,
+      items: fetchForgeWorkItems(project, kind, query),
+    })),
   );
   const errors: InboxProviderErrors = {};
-  if (github.error && grouped.length > 0) errors.github = github.error;
+  const forgeItems: InboxItem[] = [];
+  for (const forge of ["github", "gitlab"] as const) {
+    const batch = jobs.filter((job) => job.forge === forge);
+    if (batch.length === 0) continue;
+    const collected = collectInboxResults(
+      await Promise.allSettled(batch.map((job) => job.items)),
+      preferredPaths,
+    );
+    if (collected.error) errors[forge] = collected.error;
+    forgeItems.push(...collected.items);
+  }
 
   let linearItems: InboxItem[] = [];
   if ((await linearConnected()).connected) {
@@ -495,9 +565,30 @@ async function fetchInboxItems(
   }
 
   return {
-    items: dedupeInboxItems([...github.items, ...linearItems], preferredPaths),
+    items: dedupeInboxItems([...forgeItems, ...linearItems], preferredPaths),
     errors,
   };
+}
+
+async function fetchForgeWorkItems(
+  project: { path: string; repo: string; forge: ForgeProvider },
+  kind: GithubTaskKind,
+  query: InboxQuery,
+): Promise<InboxItem[]> {
+  const items =
+    project.forge === "gitlab"
+      ? await listGitlabWorkItems(project.path, {
+          ...query,
+          kind,
+          limit: query.state === "all" ? INBOX_ALL_LIMIT : undefined,
+        })
+      : await listGithubWorkItems(project.path, { ...query, kind });
+  return items.map((item) => ({
+    ...item,
+    projectPath: project.path,
+    provider: project.forge,
+    repo: item.repo || project.repo,
+  }));
 }
 
 async function fetchLinearInboxItems(query: InboxQuery): Promise<InboxItem[]> {
@@ -570,18 +661,21 @@ export function uniqueInboxProjects(
 }
 
 export function groupProjectsByRepo(
-  resolved: readonly { path: string; repo: string }[],
-): { path: string; repo: string }[] {
+  resolved: readonly { path: string; repo: string; forge: ForgeProvider }[],
+): { path: string; repo: string; forge: ForgeProvider }[] {
   const seen = new Set<string>();
-  const grouped: { path: string; repo: string }[] = [];
+  const grouped: { path: string; repo: string; forge: ForgeProvider }[] = [];
   for (const project of resolved) {
     const repo = project.repo.trim().toLowerCase();
-    const key = repo || `path:${normalizeProjectPath(project.path)}`;
+    const key = repo
+      ? `${project.forge}:${repo}`
+      : `path:${normalizeProjectPath(project.path)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     grouped.push({
       path: project.path,
       repo: project.repo.trim(),
+      forge: project.forge,
     });
   }
   return grouped;
@@ -621,11 +715,12 @@ export function inboxIdentityKey(item: {
     if (identity) return identity.toLowerCase();
     return `linear:${item.number}`;
   }
+  const prefix = item.provider === "gitlab" ? "gitlab:" : "";
   const repo = item.repo.trim().toLowerCase();
-  if (repo) return `${repo}:${item.kind}:${item.number}`;
+  if (repo) return `${prefix}${repo}:${item.kind}:${item.number}`;
   const url = item.url.trim().toLowerCase();
   if (url) return url;
-  return `${item.kind}:${item.number}`;
+  return `${prefix}${item.kind}:${item.number}`;
 }
 
 export function dedupeInboxItems(
@@ -702,7 +797,9 @@ export function matchesInboxQuery(item: InboxItem, query: string): boolean {
   if (!needle) return true;
   const kind =
     item.kind === "pr"
-      ? "pull request pr"
+      ? item.provider === "gitlab"
+        ? "merge request mr pull request pr"
+        : "pull request pr"
       : item.kind === "linear"
         ? "linear issue"
         : "issue";
@@ -733,11 +830,15 @@ export function filterInboxItems(
 
 export function inboxItemRef(item: {
   provider?: InboxProvider;
+  kind?: InboxKind;
   number: number;
   identifier?: string;
 }): string {
   if (item.provider === "linear") {
     return item.identifier?.trim() || `#${item.number}`;
+  }
+  if (item.provider === "gitlab" && item.kind === "pr") {
+    return `!${item.number}`;
   }
   return `#${item.number}`;
 }
@@ -755,13 +856,17 @@ export function inboxStartDraft(item: InboxItem, body?: string): string {
     }
     return `${lines.join("\n")}\n`;
   }
-  const kind = item.kind === "pr" ? "pull request" : "issue";
-  const title = item.title.trim() || `GitHub ${kind} #${item.number}`;
-  const lines = [
-    `Work on this GitHub ${kind}:`,
-    "",
-    `#${item.number} ${title}`,
-  ];
+  const gitlab = item.provider === "gitlab";
+  const forge = gitlab ? "GitLab" : "GitHub";
+  const kind =
+    item.kind === "pr"
+      ? gitlab
+        ? "merge request"
+        : "pull request"
+      : "issue";
+  const ref = inboxItemRef(item);
+  const title = item.title.trim() || `${forge} ${kind} ${ref}`;
+  const lines = [`Work on this ${forge} ${kind}:`, "", `${ref} ${title}`];
   const url = item.url.trim();
   if (url) lines.push(url);
   return `${lines.join("\n")}\n`;
