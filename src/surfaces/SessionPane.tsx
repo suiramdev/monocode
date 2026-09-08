@@ -72,7 +72,7 @@ type Props = {
   onBranchChange: (sessionId: string, branch: string) => void;
   onWorktreeChange: (
     sessionId: string,
-    target: { path: string; branch: string },
+    target: { path: string; branch: string } | null,
   ) => void;
   onModelChange: (sessionId: string, harness: HarnessId, model: string) => void;
   onModelSettingsChange: (

@@ -2,6 +2,7 @@ import {
   Archive,
   ArrowLeft,
   Bot,
+  FolderPlus,
   Keyboard,
   Palette,
   SlidersHorizontal,
@@ -18,6 +19,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   appearance: Palette,
   keybindings: Keyboard,
   providers: Bot,
+  worktrees: FolderPlus,
   archive: Archive,
 };
 

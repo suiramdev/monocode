@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Settings → Worktrees holds the worktree folder and, per project, a setup and a teardown script. Setup runs in a worktree MonoCode has just created, before the session opens; teardown runs inside the worktree right before MonoCode removes it. Both go through your shell with the worktree as the working directory and `MONOCODE_EVENT`, `MONOCODE_PROJECT_DIR`, `MONOCODE_WORKTREE_DIR`, `MONOCODE_WORKTREE_NAME` and `MONOCODE_WORKTREE_BRANCH` set, and are stopped after ten minutes.
+- Archiving or deleting a session that runs in a worktree asks what happens to that working copy: keep it, or run the teardown script and remove it. It warns about uncommitted changes first, and a removal git refuses can be retried with force. A worktree another open session shares is never offered.
+
+### Changed
+
+- Worktrees left the branch picker for their own menu beside it. The branch picker now only switches branches, and the worktree menu runs the session in the project checkout, in an existing worktree — the ones holding or cut from the selected branch first, then the rest of the repository's — or in a new one named after what you type, or the generated name offered when the field is empty. A new name is cut from the selected branch, so several worktrees can grow out of the same branch.
+- Switching to a branch another worktree already holds names that worktree instead of surfacing git's refusal.
+
 ## [0.1.39] - 2026-09-08
 
 ### Added

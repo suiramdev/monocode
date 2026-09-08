@@ -3,7 +3,12 @@ import { ALT, IS_MAC, MOD, SHIFT } from "./platform";
 const SECTION_KEY = "monocode.settingsSection";
 
 export type SettingsSectionId =
-  "general" | "appearance" | "keybindings" | "providers" | "archive";
+  | "general"
+  | "appearance"
+  | "keybindings"
+  | "providers"
+  | "worktrees"
+  | "archive";
 
 export const SETTINGS_SECTIONS: {
   id: SettingsSectionId;
@@ -31,6 +36,12 @@ export const SETTINGS_SECTIONS: {
     label: "Providers",
     description:
       "Agent CLIs MonoCode can drive, and the model new sessions start with.",
+  },
+  {
+    id: "worktrees",
+    label: "Worktrees",
+    description:
+      "Where new worktrees land, and the scripts a project runs when a worktree session starts or is torn down.",
   },
   {
     id: "archive",

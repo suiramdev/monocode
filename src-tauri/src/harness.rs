@@ -742,7 +742,7 @@ const SPAWN_CANCELLED: &str = "Harness start was cancelled";
 /// marker a later launch reads to recognise what this run left behind. Every
 /// harness spawn goes through here, probes included: a `--help` probe that
 /// hangs is a `node` process too, and an unmarked one is unreapable.
-fn isolate_child(cmd: &mut Command) {
+pub(crate) fn isolate_child(cmd: &mut Command) {
     cmd.env(HARNESS_PARENT_ENV, std::process::id().to_string());
     #[cfg(unix)]
     {
@@ -762,7 +762,7 @@ fn isolate_child(cmd: &mut Command) {
     }
 }
 
-fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+pub(crate) fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     #[cfg(windows)]
     {
         crate::windows::spawn_managed(cmd)
