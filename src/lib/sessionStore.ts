@@ -98,7 +98,9 @@ function persistableMeta(
       ? { contextWindow: session.context.window }
       : {}),
     ...(session.branch ? { branch: session.branch } : {}),
-    ...(session.worktreeCwd ? { worktreeCwd: session.worktreeCwd } : {}),
+    ...(session.worktreeCwd
+      ? { worktreeCwd: normalizeProjectPath(session.worktreeCwd) }
+      : {}),
   };
 }
 

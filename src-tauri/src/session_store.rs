@@ -572,7 +572,14 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    let git = crate::fs::git_info_for(&crate::fs::expand_home(&session.cwd));
+    // The session's branch is the one checked out where it runs, not the project's.
+    let git_root = session
+        .worktree_cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(session.cwd.as_str());
+    let git = crate::fs::git_info_for(&crate::fs::expand_home(git_root));
     let branch = session
         .branch
         .as_deref()

@@ -81,6 +81,7 @@ import {
   pickAndSaveChatBackground,
   removeChatBackground,
 } from "../lib/chatBackground";
+import { pickFolder } from "../lib/fs";
 import {
   applyUiScale,
   loadUiScale,
@@ -153,6 +154,7 @@ import {
   loadGridArcadeEnabled,
   loadLiveAgentsEnabled,
   loadNotesEnabled,
+  loadWorktreeRoot,
   saveClaudeHooks,
   saveComposerRunner,
   saveDiffViewer,
@@ -160,8 +162,10 @@ import {
   saveGridArcadeEnabled,
   saveLiveAgentsEnabled,
   saveNotesEnabled,
+  saveWorktreeRoot,
   settingsSectionDescription,
   settingsSectionLabel,
+  WORKTREE_ROOT_DEFAULT_LABEL,
   type DiffViewer,
   type FollowUpBehavior,
   type SettingsSectionId,
@@ -527,12 +531,46 @@ function GeneralPage({
         />
       </Row>
 
+      <Heading title="Git" />
+      <WorktreeRootRow />
+
       <Heading title="Linear" />
       <LinearSettings />
 
       <Heading title="About" />
       <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
     </>
+  );
+}
+
+function WorktreeRootRow() {
+  const [root, setRoot] = useState(loadWorktreeRoot);
+  const choose = async () => {
+    const picked = await pickFolder("Choose worktree folder");
+    if (!picked) return;
+    saveWorktreeRoot(picked);
+    setRoot(picked);
+  };
+  return (
+    <Row
+      label="Worktree folder"
+      description="New worktrees from the branch picker are created here, one folder per repository and branch."
+    >
+      <span className="max-w-64 truncate font-mono text-[12px] text-content/70">
+        {root ? prettyCwd(root) : WORKTREE_ROOT_DEFAULT_LABEL}
+      </span>
+      <SecondaryButton onClick={() => void choose()}>Choose…</SecondaryButton>
+      {root ? (
+        <SecondaryButton
+          onClick={() => {
+            saveWorktreeRoot(null);
+            setRoot(null);
+          }}
+        >
+          Reset
+        </SecondaryButton>
+      ) : null}
+    </Row>
   );
 }
 

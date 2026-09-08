@@ -3,6 +3,7 @@ import { isInFlightSession } from "./inFlight";
 import { displayPath } from "./paths";
 import {
   sessionDisplayTitle,
+  sessionWorkCwd,
   type Block,
   type HarnessId,
   type Session,
@@ -53,9 +54,10 @@ function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
   const pendingQuestion = session.pendingQuestion;
   const done = unseenFinished && !isInFlightSession(session);
   const activityBlock = pending ?? lastActivityBlock(session.blocks);
+  const workCwd = sessionWorkCwd(session);
   return {
     id: session.id,
-    cwd: session.cwd,
+    cwd: workCwd,
     title: sessionDisplayTitle(session.title, session.harness),
     harness: session.harness,
     activity: done
@@ -64,7 +66,7 @@ function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
         ? pendingQuestion.title ||
           pendingQuestion.questions[0]?.prompt ||
           "Question"
-        : activityLabel(activityBlock, session.cwd),
+        : activityLabel(activityBlock, workCwd),
     startedAt: turnStartedAt(session.blocks),
     durationMs: done ? turnDurationMs(session.blocks) : undefined,
     needsApproval: Boolean(pending) || Boolean(pendingQuestion),

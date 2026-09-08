@@ -229,12 +229,9 @@ export type Session = {
    * Handoff runs on the next send, not on picker change.
    */
   pendingSwitch?: PendingHarnessSwitch;
-  /**
-   * Last composer-pinned branch. Unused after session worktrees were removed;
-   * kept so older session records still load.
-   */
+  /** Branch of the session's worktree. Set with `worktreeCwd`. */
   branch?: string;
-  /** Extra git worktree from the old session-branch feature. Unused. */
+  /** Git worktree this session runs in; `cwd` stays the project. */
   worktreeCwd?: string;
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;

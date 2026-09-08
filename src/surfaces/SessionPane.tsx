@@ -69,7 +69,11 @@ type Props = {
   onFocus: (sessionId: string) => void;
   onClose: (sessionId: string) => void;
   onCwdChange: (sessionId: string, cwd: string) => void;
-  onBranchChange: (sessionId: string) => void;
+  onBranchChange: (sessionId: string, branch: string) => void;
+  onWorktreeChange: (
+    sessionId: string,
+    target: { path: string; branch: string },
+  ) => void;
   onModelChange: (sessionId: string, harness: HarnessId, model: string) => void;
   onModelSettingsChange: (
     sessionId: string,
@@ -147,6 +151,7 @@ export const SessionPane = memo(function SessionPane({
   onClose,
   onCwdChange,
   onBranchChange,
+  onWorktreeChange,
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
@@ -291,6 +296,7 @@ export const SessionPane = memo(function SessionPane({
       runtimeMode={session.runtimeMode}
       cwd={session.cwd}
       executionCwd={workCwd}
+      worktreePath={session.worktreeCwd}
       sessionId={session.id}
       compactSupported={canCompactHarnessContext(session.harness)}
       recents={recents}
@@ -322,7 +328,8 @@ export const SessionPane = memo(function SessionPane({
       onQuestionReply={replyQuestion}
       onFocus={() => onFocus(session.id)}
       onCwdChange={(cwd) => onCwdChange(session.id, cwd)}
-      onBranchChange={() => onBranchChange(session.id)}
+      onBranchChange={(branch) => onBranchChange(session.id, branch)}
+      onWorktreeChange={(target) => onWorktreeChange(session.id, target)}
       onNewTerminal={() => onNewTerminal(session.id)}
       onModelChange={(harness, model) => {
         onModelChange(session.id, harness, model);

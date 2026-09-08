@@ -135,6 +135,7 @@ type Props = {
   executionCwd: string;
   sessionId?: string;
   branch?: string;
+  worktreePath?: string;
   recents?: RecentProject[];
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
@@ -153,7 +154,8 @@ type Props = {
   hotkeys?: boolean;
   onFocus: () => void;
   onCwdChange: (cwd: string) => void;
-  onBranchChange?: () => void;
+  onBranchChange?: (branch: string) => void;
+  onWorktreeChange?: (target: { path: string; branch: string }) => void;
   onNewTerminal?: () => void;
   onModelChange: (harness: HarnessId, model: string) => void;
   onModelSettingsChange?: (settings: Record<string, string>) => void;
@@ -390,6 +392,7 @@ export function Composer({
   executionCwd,
   sessionId,
   branch,
+  worktreePath,
   recents = [],
   hideProjectPicker = false,
   hideBranchPicker = false,
@@ -408,6 +411,7 @@ export function Composer({
   onFocus,
   onCwdChange,
   onBranchChange,
+  onWorktreeChange,
   onNewTerminal,
   onModelChange,
   onModelSettingsChange,
@@ -1176,10 +1180,12 @@ export function Composer({
               )}
               {hideBranchPicker ? null : (
                 <BranchPicker
-                  cwd={cwd}
+                  cwd={executionCwd}
                   branch={branch}
+                  worktreePath={worktreePath}
                   enabled={enabled && !busy}
                   onChange={onBranchChange}
+                  onWorktree={onWorktreeChange}
                   onClose={() => ref.current?.focus()}
                 />
               )}

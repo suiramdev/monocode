@@ -1,4 +1,11 @@
-import { Check, GitBranch, Plus, Search } from "./icons";
+import {
+  Check,
+  Folder,
+  FolderPlus,
+  GitBranch,
+  Plus,
+  Search,
+} from "./icons";
 import {
   useEffect,
   useMemo,
@@ -12,10 +19,15 @@ import {
   gitCreateBranch,
   gitStageAll,
   gitStash,
+  gitWorktreeAdd,
+  gitWorktrees,
   isCheckoutBlockedByChanges,
   notifyGitChanged,
-  type GitBranchInfo,
+  type GitWorktreeInfo,
 } from "../lib/fs";
+import { buildBranchRows, type BranchRow } from "../lib/branchRows";
+import { prettyCwd } from "../lib/paths";
+import { loadWorktreeRoot } from "../lib/settings";
 import { useLockOverscroll } from "../hooks/useLockOverscroll";
 import { useProjectBranchesState } from "../hooks/useProjectBranches";
 import { Popover } from "./Popover";
@@ -24,16 +36,14 @@ import { SwitchBranchDialog } from "./SwitchBranchDialog";
 type Props = {
   cwd: string;
   branch?: string;
+  worktreePath?: string;
   enabled?: boolean;
-  onChange?: () => void;
+  onChange?: (branch: string) => void;
+  onWorktree?: (target: { path: string; branch: string }) => void;
   onClose?: () => void;
 };
 
 const MENU_WIDTH = 280;
-
-type Row =
-  | { kind: "create"; name: string }
-  | { kind: "branch"; branch: GitBranchInfo };
 
 type PendingSwitch =
   | { kind: "create"; name: string }
@@ -45,8 +55,10 @@ const MENU_MAX_HEIGHT = 280;
 export function BranchPicker({
   cwd,
   branch,
+  worktreePath,
   enabled = true,
   onChange,
+  onWorktree,
   onClose,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -59,12 +71,16 @@ export function BranchPicker({
   const [blockedBusy, setBlockedBusy] = useState<"stash" | "commit" | null>(
     null,
   );
+  const [worktrees, setWorktrees] = useState<GitWorktreeInfo[]>([]);
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onWorktreeRef = useRef(onWorktree);
+  onWorktreeRef.current = onWorktree;
+  const allowWorktrees = Boolean(onWorktree);
 
   const inProject = Boolean(cwd) && cwd !== "~";
   const { branches: projectBranches, settled: branchesSettled } =
@@ -95,6 +111,23 @@ export function BranchPicker({
     if (open) search.current?.focus();
   }, [open]);
 
+  // Worktrees only matter while the menu is open, and `git worktree list`
+  // shells out — load it on open rather than with every branch refresh.
+  useEffect(() => {
+    if (!open || !allowWorktrees) return;
+    let cancelled = false;
+    void gitWorktrees(cwd)
+      .then((list) => {
+        if (!cancelled) setWorktrees(list);
+      })
+      .catch(() => {
+        if (!cancelled) setWorktrees([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [allowWorktrees, cwd, open]);
+
   useEffect(() => {
     if (enabled) return;
     setOpen(false);
@@ -106,35 +139,18 @@ export function BranchPicker({
     setBlockedBusy(null);
   }, [enabled]);
 
-  const rows = useMemo((): Row[] => {
-    const branches = projectBranches?.branches ?? [];
-    const name = query.trim();
-    const needle = name.toLowerCase();
-    const filtered = needle
-      ? branches.filter((entry) => {
-          const hay = entry.remote
-            ? `${entry.name} ${entry.remote}`
-            : entry.name;
-          return hay.toLowerCase().includes(needle);
-        })
-      : branches;
-    const taken = branches.some(
-      (entry) => !entry.remote && entry.name === name,
-    );
-    const selected = branch || projectBranches?.current;
-    const create: Row[] =
-      name && !taken ? [{ kind: "create", name }] : [];
-    return [
-      ...create,
-      ...filtered.map((entry) => ({
-        kind: "branch" as const,
-        branch: {
-          ...entry,
-          current: entry.name === selected && !entry.remote,
-        },
-      })),
-    ];
-  }, [branch, projectBranches, query]);
+  const rows = useMemo(
+    () =>
+      buildBranchRows({
+        branches: projectBranches?.branches ?? [],
+        worktrees,
+        query,
+        selected: branch || projectBranches?.current || null,
+        workCwd: cwd,
+        allowWorktrees,
+      }),
+    [allowWorktrees, branch, cwd, projectBranches, query, worktrees],
+  );
 
   useEffect(() => {
     setActive((i) => (rows.length === 0 ? 0 : Math.min(i, rows.length - 1)));
@@ -145,9 +161,9 @@ export function BranchPicker({
       ? gitCreateBranch(cwd, pending.name)
       : gitCheckout(cwd, pending.name, pending.remote);
 
-  const finishSwitch = () => {
+  const finishSwitch = (name: string) => {
     notifyGitChanged();
-    onChangeRef.current?.();
+    onChangeRef.current?.(name);
     dismiss(true);
   };
 
@@ -160,7 +176,7 @@ export function BranchPicker({
     setError(null);
     try {
       await applySwitch(pending);
-      finishSwitch();
+      finishSwitch(pending.name);
     } catch (err) {
       const message = failMessage(err);
       if (isCheckoutBlockedByChanges(message)) {
@@ -179,6 +195,28 @@ export function BranchPicker({
     }
   };
 
+  // Creating a worktree never touches this checkout, so a failure is reported
+  // in the menu instead of offering to stash or commit.
+  const runWorktree = async (name: string, exists: boolean) => {
+    if (busy || blocked) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const target = await gitWorktreeAdd(cwd, {
+        name,
+        create: !exists,
+        root: loadWorktreeRoot(),
+      });
+      notifyGitChanged();
+      onWorktreeRef.current?.(target);
+      dismiss(true);
+    } catch (err) {
+      setError(failMessage(err));
+      setBusy(false);
+      search.current?.focus();
+    }
+  };
+
   const resolveBlocked = async (
     kind: "stash" | "commit",
     work: () => Promise<unknown>,
@@ -189,16 +227,28 @@ export function BranchPicker({
     try {
       await work();
       await applySwitch(blocked);
-      finishSwitch();
+      finishSwitch(blocked.name);
     } catch (err) {
       setBlockedError(failMessage(err));
       setBlockedBusy(null);
     }
   };
 
-  const pick = (row: Row) => {
+  const pick = (row: BranchRow) => {
     if (row.kind === "create") {
       void run({ kind: "create", name: row.name });
+      return;
+    }
+    if (row.kind === "create-worktree") {
+      void runWorktree(row.name, row.exists);
+      return;
+    }
+    if (row.kind === "worktree") {
+      onWorktreeRef.current?.({
+        path: row.worktree.path,
+        branch: row.worktree.branch ?? row.worktree.head,
+      });
+      dismiss(true);
       return;
     }
     if (row.branch.current) {
@@ -242,11 +292,14 @@ export function BranchPicker({
       ? `detached ${current}`
       : current
     : "No repo";
+  const worktreeLabel = worktreePath ? prettyCwd(worktreePath) : null;
   const title = awaitingBranch
     ? "Loading branch…"
     : missingGit
       ? "No git repository"
-      : label;
+      : worktreeLabel
+        ? `${label} · worktree ${worktreeLabel}`
+        : label;
   const interactive = enabled && !awaitingBranch && !missingGit;
 
   return (
@@ -260,7 +313,9 @@ export function BranchPicker({
               ? "Loading branch"
               : missingGit
                 ? "No git repository"
-                : `Branch ${label}`
+                : worktreeLabel
+                  ? `Branch ${label} in worktree ${worktreeLabel}`
+                  : `Branch ${label}`
           }
           aria-expanded={missingGit ? undefined : open}
           aria-haspopup={missingGit ? undefined : "dialog"}
@@ -389,12 +444,12 @@ function BranchList({
   onActive,
   onPick,
 }: {
-  rows: Row[];
+  rows: BranchRow[];
   active: number;
   busy: boolean;
   emptyLabel: string;
   onActive: (index: number) => void;
-  onPick: (row: Row) => void;
+  onPick: (row: BranchRow) => void;
 }) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
@@ -419,12 +474,18 @@ function BranchList({
       {rows.map((row, index) => {
         const highlighted = index === active;
         const selected = row.kind === "branch" && row.branch.current;
+        const create =
+          row.kind === "create" || row.kind === "create-worktree";
         return (
           <button
             key={
               row.kind === "create"
                 ? `create:${row.name}`
-                : `${row.branch.remote ?? "local"}:${row.branch.name}`
+                : row.kind === "create-worktree"
+                  ? `create-worktree:${row.name}`
+                  : row.kind === "worktree"
+                    ? `worktree:${row.worktree.path}`
+                    : `${row.branch.remote ?? "local"}:${row.branch.name}`
             }
             ref={highlighted ? activeRef : undefined}
             type="button"
@@ -435,7 +496,7 @@ function BranchList({
             onMouseEnter={() => onActive(index)}
             onClick={() => onPick(row)}
             className={
-              row.kind === "create"
+              create
                 ? `mb-1 flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left disabled:opacity-60 ${
                     highlighted
                       ? "bg-content/15 text-content"
@@ -453,6 +514,26 @@ function BranchList({
                 <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
                 <span className="min-w-0 truncate text-[12px]">
                   Create and checkout {row.name}
+                </span>
+              </>
+            ) : row.kind === "create-worktree" ? (
+              <>
+                <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
+                <span className="min-w-0 truncate text-[12px]">
+                  {row.exists ? "Open" : "Create"} {row.name} in a new worktree
+                </span>
+              </>
+            ) : row.kind === "worktree" ? (
+              <>
+                <Folder
+                  className="size-3.5 shrink-0 text-content/50"
+                  strokeWidth={1.75}
+                />
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
+                  {row.worktree.branch ?? row.worktree.head}
+                </span>
+                <span className="max-w-[45%] shrink-0 truncate text-[10px] text-content/40">
+                  {prettyCwd(row.worktree.path)}
                 </span>
               </>
             ) : (
