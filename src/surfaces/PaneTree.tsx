@@ -54,7 +54,11 @@ type Shared = {
   onFileErrorCountChange: (fileId: string, count: number) => void;
   onRatio: (splitId: string, index: number, ratio: number) => void;
   onCwdChange: (sessionId: string, cwd: string) => void;
-  onBranchChange: (sessionId: string) => void;
+  onBranchChange: (sessionId: string, branch: string) => void;
+  onWorktreeChange: (
+    sessionId: string,
+    target: { path: string; branch: string },
+  ) => void;
   onModelChange: (sessionId: string, harness: HarnessId, model: string) => void;
   onModelSettingsChange: (
     sessionId: string,
@@ -153,6 +157,7 @@ function PaneTreeComponent({
   onRatio,
   onCwdChange,
   onBranchChange,
+  onWorktreeChange,
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
@@ -358,6 +363,7 @@ function PaneTreeComponent({
                 onClose={onClose}
                 onCwdChange={onCwdChange}
                 onBranchChange={onBranchChange}
+                onWorktreeChange={onWorktreeChange}
                 onModelChange={onModelChange}
                 onModelSettingsChange={onModelSettingsChange}
                 onRuntimeModeChange={onRuntimeModeChange}

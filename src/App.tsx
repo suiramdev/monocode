@@ -1561,6 +1561,9 @@ export default function App({
     setComposerFocused(false);
   }, []);
 
+  // Terminals opened for the active session run in its working copy.
+  const activeWorkCwd = active ? sessionWorkCwd(active) : projectCwd;
+
   const openProjectTerminal = useCallback(
     (cwd: string) => {
       const workdir = cwd || projectCwdRef.current;
@@ -1587,7 +1590,7 @@ export default function App({
 
   const onOpenTerminal = useCallback(
     (cwd: string, asWorkspaceTab = false, occupySessionId?: string) => {
-      const workdir = cwd || active?.cwd || projectCwd;
+      const workdir = cwd || activeWorkCwd;
       if (openProjectTerminal(workdir)) return;
 
       if (asWorkspaceTab || !activeTab) {
@@ -1625,12 +1628,12 @@ export default function App({
       );
       setComposerFocused(false);
     },
-    [active?.cwd, activeTab, appendTab, openProjectTerminal, projectCwd],
+    [activeWorkCwd, activeTab, appendTab, openProjectTerminal],
   );
 
   const onNewTerminal = useCallback(() => {
-    onOpenTerminal(active?.cwd ?? projectCwd);
-  }, [active?.cwd, onOpenTerminal, projectCwd]);
+    onOpenTerminal(activeWorkCwd);
+  }, [activeWorkCwd, onOpenTerminal]);
 
   const onShowProjectTerminal = useCallback(() => {
     const dock = findProjectTerminal(projectTerminalsRef.current, projectCwd);
@@ -1645,8 +1648,8 @@ export default function App({
       focusProjectTerminal();
       return;
     }
-    onOpenTerminal(active?.cwd ?? projectCwd);
-  }, [active?.cwd, focusProjectTerminal, onOpenTerminal, projectCwd]);
+    onOpenTerminal(activeWorkCwd);
+  }, [activeWorkCwd, focusProjectTerminal, onOpenTerminal, projectCwd]);
 
   const onNewTerminalInSession = useCallback(
     (sessionId: string) => {
@@ -1817,8 +1820,8 @@ export default function App({
   );
 
   const onNewTerminalTab = useCallback(() => {
-    onOpenTerminal(active?.cwd ?? projectCwd, true);
-  }, [active?.cwd, onOpenTerminal, projectCwd]);
+    onOpenTerminal(activeWorkCwd, true);
+  }, [activeWorkCwd, onOpenTerminal]);
 
   const onCloseTab = useCallback(
     (id: string, opts?: { confirmedTerminalIds?: string[] }) => {
@@ -2108,13 +2111,20 @@ export default function App({
       const finishClear = () => {
         persistSession(oldSession);
 
-        const session = newSession(
-          oldSession.harness,
-          oldSession.cwd,
-          oldSession.model,
-          oldSession.runtimeMode,
-          oldSession.modelSettings,
-        );
+        const session = {
+          ...newSession(
+            oldSession.harness,
+            oldSession.cwd,
+            oldSession.model,
+            oldSession.runtimeMode,
+            oldSession.modelSettings,
+          ),
+          // Clearing a tab keeps the worktree the user picked for it.
+          ...(oldSession.worktreeCwd
+            ? { worktreeCwd: oldSession.worktreeCwd }
+            : {}),
+          ...(oldSession.branch ? { branch: oldSession.branch } : {}),
+        };
 
         setSessions((prev) => [...prev, session]);
         setDirtyFiles((prev) => {
@@ -2985,6 +2995,7 @@ export default function App({
       const normalized = normalizeProjectPath(cwd);
       const current = sessionsRef.current.find((s) => s.id === sessionId);
       const previous = current?.cwd;
+      const previousWork = current ? sessionWorkCwd(current) : undefined;
       // Threads stay bound to their project. Switching from the composer opens a
       // new tab instead of retargeting the conversation.
       if (
@@ -3012,13 +3023,18 @@ export default function App({
       }
       if (
         previous &&
+        previousWork &&
         !sameProjectPath(previous, normalized) &&
         previous !== "~"
       ) {
-        void keepSessionChanges(sessionId, previous).catch(() => undefined);
+        void keepSessionChanges(sessionId, previousWork).catch(() => undefined);
       }
       setProjectCwd(normalized);
       setRecents(rememberProject(normalized));
+      // The working copy moved with the project; the thread cannot follow.
+      if (current?.worktreeCwd) {
+        void forgetHarnessSession(current.harness, sessionId);
+      }
       setSessions((prev) =>
         prev.map((s) =>
           s.id === sessionId
@@ -3027,6 +3043,9 @@ export default function App({
                 cwd: normalized,
                 branch: undefined,
                 worktreeCwd: undefined,
+                ...(current?.worktreeCwd
+                  ? { providerSessionId: undefined }
+                  : {}),
               }
             : s,
         ),
@@ -3055,24 +3074,60 @@ export default function App({
   );
 
   const onBranchChange = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, branch: string) => {
       notifyGitChanged();
       const current = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!current || (!current.branch && !current.worktreeCwd)) return;
-      if (current.worktreeCwd && current.providerSessionId) {
-        void forgetHarnessSession(current.harness, sessionId);
-      }
-      const next = {
-        ...current,
-        branch: undefined,
-        worktreeCwd: undefined,
-        ...(current.worktreeCwd ? { providerSessionId: undefined } : {}),
-      };
+      // Only a worktree session owns a branch; the project's HEAD is not ours.
+      if (!current?.worktreeCwd) return;
+      const next = { ...current, branch };
       setSessions((prev) => prev.map((s) => (s.id === sessionId ? next : s)));
       persistSession(next);
       notifyReviewChanged(sessionId);
     },
     [persistSession],
+  );
+
+  const onWorktreeChange = useCallback(
+    (sessionId: string, target: { path: string; branch: string }) => {
+      const current = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!current) return;
+      const path = normalizeProjectPath(target.path);
+      if (isBlankSession(current)) {
+        if (current.providerSessionId) {
+          void forgetHarnessSession(current.harness, sessionId);
+        }
+        const next = {
+          ...current,
+          worktreeCwd: path,
+          branch: target.branch,
+          providerSessionId: undefined,
+        };
+        setSessions((prev) => prev.map((s) => (s.id === sessionId ? next : s)));
+        persistSession(next);
+        notifyGitChanged();
+        notifyReviewChanged(sessionId);
+        return;
+      }
+      // Threads stay bound to the working copy they ran in, so a started
+      // conversation opens a new session on the worktree instead.
+      const session = {
+        ...newSession(
+          current.harness,
+          current.cwd,
+          current.model,
+          current.runtimeMode,
+          current.modelSettings,
+        ),
+        worktreeCwd: path,
+        branch: target.branch,
+      };
+      const tab = newTab(session.id);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, current.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+    },
+    [appendTab, persistSession],
   );
 
   const onSelectProject = useCallback(
@@ -3334,7 +3389,7 @@ export default function App({
         session.id,
         block.id,
         planTitle(block.text),
-        session.cwd,
+        sessionWorkCwd(session),
       );
       setTabs((prev) =>
         prev.map((entry) =>
@@ -4212,10 +4267,12 @@ export default function App({
         files,
       });
       const session = {
-        ...newSession(harness, cwd, model, source.runtimeMode),
+        ...newSession(harness, source.cwd, model, source.runtimeMode),
         title: formatSessionTitle(harness, SECOND_OPINION_TITLE),
+        ...(source.worktreeCwd ? { worktreeCwd: source.worktreeCwd } : {}),
+        ...(source.branch ? { branch: source.branch } : {}),
       };
-      openSessionBeside(sourceId, session, cwd);
+      openSessionBeside(sourceId, session, source.cwd);
       onSubmit(session.id, prompt, [], {
         secondOpinion: buildSecondOpinionCard({
           from,
@@ -4241,11 +4298,13 @@ export default function App({
       const files = turnEditedFiles(sliced.blocks, cwd);
       const display = sessionDisplayTitle(source.title, source.harness);
       const session = {
-        ...newSession(harness, cwd, model, source.runtimeMode),
+        ...newSession(harness, source.cwd, model, source.runtimeMode),
         title: formatSessionTitle(
           harness,
           display === "New session" ? HANDOFF_TITLE : display,
         ),
+        ...(source.worktreeCwd ? { worktreeCwd: source.worktreeCwd } : {}),
+        ...(source.branch ? { branch: source.branch } : {}),
         handoffCard: buildHandoffComposerCard({
           from,
           to: harness,
@@ -4254,7 +4313,7 @@ export default function App({
           files,
         }),
       };
-      openSessionBeside(sourceId, session, cwd, true);
+      openSessionBeside(sourceId, session, source.cwd, true);
     },
     [openSessionBeside],
   );
@@ -5084,6 +5143,7 @@ export default function App({
     onClose: onClosePane,
     onCwdChange,
     onBranchChange,
+    onWorktreeChange,
     onModelChange,
     onModelSettingsChange,
     onRuntimeModeChange,
@@ -5296,9 +5356,7 @@ export default function App({
                       onSideChange={onProjectTerminalSide}
                       onSizePaint={paintDockSize}
                       onSizeCommit={commitDockSize}
-                      onAddTerminal={() =>
-                        onOpenTerminal(active?.cwd ?? projectCwd)
-                      }
+                      onAddTerminal={() => onOpenTerminal(activeWorkCwd)}
                       onSelectTerminal={onSelectProjectTerminal}
                       onCloseTerminal={onCloseProjectTerminal}
                       onReorderTerminals={onReorderProjectTerminals}

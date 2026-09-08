@@ -308,6 +308,28 @@ export function saveClaudeHooks(value: boolean) {
   }
 }
 
+const WORKTREE_ROOT_KEY = "monocode.worktreeRoot";
+
+/** Shown when no folder is picked; Rust resolves the same default. */
+export const WORKTREE_ROOT_DEFAULT_LABEL = "~/.monocode/worktrees";
+
+export function loadWorktreeRoot(): string | null {
+  try {
+    return localStorage.getItem(WORKTREE_ROOT_KEY)?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveWorktreeRoot(value: string | null) {
+  try {
+    if (value) localStorage.setItem(WORKTREE_ROOT_KEY, value);
+    else localStorage.removeItem(WORKTREE_ROOT_KEY);
+  } catch {
+    // private mode / quota
+  }
+}
+
 const CTRL = IS_MAC ? "⌃" : "Ctrl+";
 
 export type KeybindingRow = {

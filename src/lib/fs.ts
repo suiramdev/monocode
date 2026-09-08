@@ -273,6 +273,44 @@ export function gitStash(cwd: string, message?: string): Promise<void> {
   return invoke<void>("git_stash", { cwd, message: message ?? null });
 }
 
+export type GitWorktreeInfo = {
+  path: string;
+  branch: string | null;
+  head: string;
+  main: boolean;
+};
+
+export type GitWorktreeAdd = { path: string; branch: string };
+
+export function gitWorktrees(cwd: string): Promise<GitWorktreeInfo[]> {
+  return invoke<GitWorktreeInfo[]>("git_worktrees", { cwd });
+}
+
+export function gitWorktreeAdd(
+  cwd: string,
+  input: {
+    name: string;
+    remote?: string | null;
+    create: boolean;
+    root: string | null;
+  },
+): Promise<GitWorktreeAdd> {
+  return invoke<GitWorktreeAdd>("git_worktree_add", {
+    cwd,
+    name: input.name,
+    remote: input.remote ?? null,
+    create: input.create,
+    root: input.root,
+  });
+}
+
+export function gitWorktreeValid(
+  cwd: string,
+  worktree: string,
+): Promise<boolean> {
+  return invoke<boolean>("git_worktree_valid", { cwd, worktree });
+}
+
 /** Git refused a checkout because the working tree would be overwritten. */
 export function isCheckoutBlockedByChanges(message: string): boolean {
   const text = message.toLowerCase();
@@ -283,16 +321,25 @@ export function isCheckoutBlockedByChanges(message: string): boolean {
   );
 }
 
-/** Drop leftover session-worktree pins. The composer now switches this folder. */
-export function restoreSessionCheckout<
-  T extends { cwd: string; branch?: string; worktreeCwd?: string; providerSessionId?: string },
->(session: T): T {
-  if (!session.branch && !session.worktreeCwd) return session;
+/** Keep a session's worktree when it still exists; otherwise fall back to the project. */
+export async function restoreSessionCheckout<
+  T extends {
+    cwd: string;
+    branch?: string;
+    worktreeCwd?: string;
+    providerSessionId?: string;
+  },
+>(session: T): Promise<T> {
+  if (!session.worktreeCwd) return session;
+  const valid = await gitWorktreeValid(session.cwd, session.worktreeCwd).catch(
+    () => false,
+  );
+  if (valid) return session;
   return {
     ...session,
     branch: undefined,
     worktreeCwd: undefined,
-    ...(session.worktreeCwd ? { providerSessionId: undefined } : {}),
+    providerSessionId: undefined,
   };
 }
 
