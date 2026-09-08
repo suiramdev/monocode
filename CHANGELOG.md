@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.39-mono.2] - 2026-09-08
+
+### Added
+
+- Fork release of upstream 0.1.39.
+
 ## [0.1.39] - 2026-09-08
 
 ### Added
